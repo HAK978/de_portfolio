@@ -1,0 +1,148 @@
+## Project Context for Next Chat Session
+
+### What this project is
+CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a user's Steam inventory, shows items with images/rarity/prices from multiple sources, and will eventually alert on price spikes. See cs2_app.md for the full 6-phase plan.
+
+### Current state
+- **Phase 1: COMPLETE** — Full UI shell with dark theme, bottom nav (GoRouter), 5 screens, Riverpod state management, filter system, sort options.
+- **Phase 3: COMPLETE** — Steam API integration working. Inventory fetches with progress UI, caches to disk, persists across restarts.
+- **Phase 4: COMPLETE** — Steam Market + CSFloat pricing, price history charts with fl_chart, rate limits at 1 sec.
+- **Phase 2: IN PROGRESS** — Steam WebView login working (gets Steam ID). Firebase packages added but project not configured yet. Cookie capture blocked by HttpOnly.
+
+### What was built/changed this session
+
+#### Bug fix: auto-fetch race condition
+- `home_screen.dart` auto-fetch now checks `loadedItems.isNotEmpty` not just `AsyncData` — prevents "No inventory loaded" error when Steam ID is still loading from disk on startup.
+
+#### Phase 4 completion: Price history charts
+1. **lib/services/price_history_service.dart** (NEW)
+   - Endpoint: `GET steamcommunity.com/market/pricehistory/?appid=730&market_hash_name={name}&currency=1`
+   - **Requires `steamLoginSecure` cookie** — sent as `Cookie` header
+   - Parses Steam's date format ("Mar 20 2026 01: +0")
+   - Aggregates hourly data to daily (median price + total volume)
+   - Caches per-item to `price_history/` directory (6-hour expiry)
+   - Has `clearCache()` method for testing
+
+2. **lib/widgets/price_chart.dart** (NEW)
+   - fl_chart `LineChart` with touch tooltips, date labels
+   - Time range selector: 7D, 1M, 3M, 6M, 1Y, All (ChartRange enum)
+   - Green/red line color based on price direction for selected period
+   - Shows period % change badge
+   - Gradient fill below line
+
+3. **lib/providers/price_history_provider.dart** (NEW)
+   - `steamLoginCookieProvider` — persists cookie to `steam_login_cookie.txt`
+   - `priceHistoryServiceProvider` — recreated when cookie changes (watches cookie provider)
+   - `priceHistoryProvider` — FutureProvider.family<List<PriceHistoryPoint>?, String>
+
+4. **Item detail screen** — placeholder replaced with `_PriceHistorySection` ConsumerWidget that shows loading/error/chart states
+
+#### Rate limits reduced
+- Both `price_service.dart` and `csfloat_service.dart`: 1500ms → 1000ms between requests
+
+#### Phase 2: Steam WebView Login
+1. **lib/screens/auth/steam_login_screen.dart** (NEW)
+   - Opens `store.steampowered.com/login/?redir=my/profile` in WebView
+   - After login detected (URL no longer contains `/login`), redirects to `steamcommunity.com/my/profile`
+   - Extracts Steam ID from URL (`/profiles/76561...`) or page DOM (`data-steamid`, `g_steamID`)
+   - Tries to read `steamLoginSecure` cookie via `document.cookie` — **BLOCKED by HttpOnly flag**
+   - Has XHR test: makes fetch to price history endpoint from WebView to verify session works
+   - `WidgetsBindingObserver` for app lifecycle — when user returns from Steam app (2FA), auto-extracts data
+   - "Done" button as manual fallback
+   - Returns `SteamLoginResult(steamId, steamLoginCookie?)`
+
+2. **Samsung WebView issues**
+   - **Impeller must be disabled** — WebView renders blank on Samsung S24 with Impeller enabled
+   - Added `<meta-data android:name="io.flutter.embedding.android.EnableImpeller" android:value="false"/>` to AndroidManifest.xml
+   - Also need `flutter run --no-enable-impeller` (manifest flag may be ignored in some Flutter versions)
+   - `displayWithHybridComposition: true` causes blank screen — removed, using simple `WebViewWidget(controller:)` instead
+   - Samsung Android 14 resume bug: WebView goes black after switching apps — handled by lifecycle observer
+
+3. **Settings screen updates**
+   - "Steam Account" card shows signed-in status: Steam ID + cookie status (green/orange indicators)
+   - "Re-sign in" and "Sign out" buttons when logged in
+   - Sign out clears: Steam ID, cookie, WebView cookies (`WebViewCookieManager().clearCookies()`)
+   - "Sign in with Steam" button when not logged in
+   - Steam Login Cookie manual input field still available (needed because HttpOnly blocks JS cookie reading)
+
+4. **Home screen updates**
+   - "Sign in with Steam" button when no Steam ID (replaces "Go to Settings")
+   - "Or enter Steam ID manually" text button as fallback
+
+5. **Firebase foundation**
+   - `firebase_core`, `cloud_firestore`, `firebase_auth` packages added
+   - `lib/services/firestore_service.dart` (NEW) — CRUD for users, inventory, prices with batch writes (500-item batches)
+   - `lib/providers/auth_provider.dart` (NEW) — AuthState, Firebase auth listener, custom token sign-in placeholder
+   - `lib/main.dart` — `Firebase.initializeApp()` in try/catch (works offline without config)
+   - `firestore.rules` — security rules template
+
+### Key issue: HttpOnly cookie
+The `steamLoginSecure` cookie is HttpOnly — JavaScript in the WebView cannot read it. The WebView login successfully:
+- Gets the Steam ID automatically
+- Establishes a valid session (verified by XHR test to price history endpoint)
+But it CANNOT extract the raw cookie value for use in the Dart HTTP client.
+
+**Current workaround:** User manually copies `steamLoginSecure` from browser DevTools and pastes it in Settings → "Steam Login Cookie" field.
+
+**Possible solutions for next session:**
+1. Write a native Android platform channel to call `android.webkit.CookieManager.getCookie(url)` which CAN read HttpOnly cookies
+2. Route price history requests through the WebView instead of Dart's HTTP client
+3. Use `flutter_inappwebview` package which has full cookie access API
+4. Accept manual paste as the permanent solution
+
+### Key files and their roles
+- `lib/models/cs2_item.dart` — item model with copyWith, toJson, fromJson, csfloatPrice
+- `lib/services/price_service.dart` — Steam Market pricing (1 sec rate limit)
+- `lib/services/csfloat_service.dart` — CSFloat pricing (1 sec rate limit, requires API key)
+- `lib/services/price_history_service.dart` — Steam price history (requires steamLoginSecure cookie)
+- `lib/services/steam_api_service.dart` — inventory fetch with progress callback + disk caching
+- `lib/services/firestore_service.dart` — Firestore CRUD (ready, needs Firebase project)
+- `lib/providers/price_provider.dart` — price state management, CSFloat API key, marketable item filtering
+- `lib/providers/price_history_provider.dart` — steam login cookie persistence, price history FutureProvider.family
+- `lib/providers/inventory_provider.dart` — inventory state, price merging, Steam ID persistence, portfolio values
+- `lib/providers/auth_provider.dart` — Firebase auth state (placeholder until Firebase configured)
+- `lib/screens/auth/steam_login_screen.dart` — WebView Steam login with lifecycle handling
+- `lib/screens/home/home_screen.dart` — dashboard with auto-fetch, sign-in prompt, price cards
+- `lib/screens/inventory/inventory_screen.dart` — filterable/sortable list, search, pull-to-refresh
+- `lib/screens/inventory/item_detail_screen.dart` — item details with dual prices + price history chart
+- `lib/screens/settings/settings_screen.dart` — Steam login status, Steam ID, CSFloat key, cookie input, sign out
+- `lib/widgets/item_card.dart` — optimized card with dual prices + % difference
+- `lib/widgets/price_chart.dart` — fl_chart line chart with time range selector
+- `lib/widgets/portfolio_summary.dart` — Steam + CSFloat portfolio values
+- `lib/main.dart` — app entry with wakelock + Firebase init
+
+### Dependencies
+- flutter_riverpod 3.3.1, go_router 17.1.0, http, path_provider, wakelock_plus
+- cached_network_image (only in item_detail_screen.dart), google_fonts, intl
+- fl_chart (price history charts)
+- firebase_core, cloud_firestore, firebase_auth (added, not configured)
+- webview_flutter, webview_flutter_android (Steam login)
+
+### Important notes
+- **Impeller disabled** in AndroidManifest.xml — required for WebView on Samsung S24 Ultra
+- **Riverpod v3**: no StateProvider, no valueOrNull, watch outside .when(), use Notifier with set()
+- **Rate limits**: 1 sec between requests for both Steam Market and CSFloat
+- **Auto-fetch**: checks `loadedItems.isNotEmpty` to avoid race condition with Steam ID loading
+
+### Things to work on next
+1. **Fix HttpOnly cookie problem** — platform channel to Android CookieManager, or flutter_inappwebview
+2. **Firebase project setup** — user needs to create Firebase project + run `flutterfire configure`
+3. **Phase 5: Price spike alerts** — Cloud Functions + push notifications
+4. **Phase 6: Storage unit contents** — CaseMove repo at `casemove/`
+5. **Portfolio value chart on home screen** — total value over time
+
+### User's info
+- Steam ID: 76561198369694237 (769 items, 153 unique marketable)
+- CSFloat API key in `csfapikey.txt`
+- Samsung Galaxy S24 Ultra (device ID: R5CXB1671KJ)
+- Windows 11 with Cisco AnyConnect VPN
+- Learning Flutter/Dart, not a beginner programmer
+- Wants concepts explained before code, concise
+- Phase order: 1 → 3 → 4 → 2 → 5 → 6
+
+### Files to reference
+- `cs2_app.md` — full project brief with all 6 phases
+- `phase1_notes.tex` — LaTeX study notes for Phase 1 code
+- `what_i_studied.txt` — timestamps from Flutter tutorial
+- `csfapikey.txt` — CSFloat API key
+- `casemove/` — CaseMove repo (reference for Phase 6 storage unit access)

@@ -1,0 +1,1168 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+% Colors
+\definecolor{codebg}{HTML}{1A1A2E}
+\definecolor{codetext}{HTML}{E0E0E0}
+\definecolor{keyword}{HTML}{4B69FF}
+\definecolor{string}{HTML}{98C379}
+\definecolor{comment}{HTML}{6A737D}
+\definecolor{type}{HTML}{D32CE6}
+\definecolor{linkcolor}{HTML}{4B69FF}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=linkcolor,
+    urlcolor=linkcolor,
+}
+
+% Code listing style
+\lstdefinestyle{dart}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small\color{codetext},
+    keywordstyle=\color{keyword}\bfseries,
+    stringstyle=\color{string},
+    commentstyle=\color{comment}\itshape,
+    numberstyle=\tiny\color{comment},
+    breaklines=true,
+    frame=single,
+    rulecolor=\color{codebg},
+    numbers=left,
+    numbersep=8pt,
+    tabsize=2,
+    showstringspaces=false,
+    morekeywords={final, var, const, required, class, extends, override, return, if, else, switch, case, void, int, double, String, bool, List, Map, null, true, false, import, enum, super, this, static, get, for, Widget},
+    literate={=>}{{\textcolor{keyword}{=>}}}2
+             {..}{{\textcolor{keyword}{..}}}2,
+}
+
+\lstset{style=dart}
+
+% Concept box
+\newtcolorbox{conceptbox}[1][]{
+    colback=blue!5,
+    colframe=blue!40,
+    title={\textbf{Key Concept}},
+    fonttitle=\bfseries,
+    #1
+}
+
+% Comparison box
+\newtcolorbox{comparisonbox}[1][]{
+    colback=green!5,
+    colframe=green!40,
+    title={\textbf{Tutorial vs. This Project}},
+    fonttitle=\bfseries,
+    #1
+}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{CS2 Portfolio --- Phase 1 Notes}
+\lhead{de\_portfolio}
+\rfoot{Page \thepage}
+
+\title{\textbf{CS2 Portfolio Manager --- Phase 1 Code Walkthrough} \\ \large Flutter UI Shell with Mock Data}
+\author{Study Notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Overview}
+
+Phase 1 builds the entire UI shell of the CS2 inventory manager app using mock data. No backend, no API calls---just Flutter widgets, navigation, and state management.
+
+\subsection{Project Structure}
+
+\begin{lstlisting}[numbers=none]
+lib/
+  main.dart                          # Entry point
+  app.dart                           # GoRouter config + bottom nav
+  theme/app_theme.dart               # Dark theme + CS2 rarity colors
+  models/
+    cs2_item.dart                    # Item data model
+    storage_unit.dart                # Storage unit model
+  data/mock_data.dart                # 10 realistic mock items
+  providers/inventory_provider.dart  # Riverpod providers for state
+  screens/
+    home/home_screen.dart            # Dashboard
+    inventory/
+      inventory_screen.dart          # Filterable item list
+      item_detail_screen.dart        # Full item details
+    storage/storage_screen.dart      # Expandable storage units
+    settings/settings_screen.dart    # Placeholder settings
+  widgets/
+    item_card.dart                   # Reusable item row
+    price_change_badge.dart          # Green/red percentage badge
+    portfolio_summary.dart           # Total value display
+\end{lstlisting}
+
+\subsection{New Concepts Not Covered in the YouTube Tutorial}
+
+The following concepts are used in this project but were \textbf{not} covered in the tutorial:
+
+\begin{enumerate}
+    \item \textbf{GoRouter} --- URL-based navigation (replaces Navigator.push/pop)
+    \item \textbf{Riverpod} --- State management (replaces ValueNotifier for shared state)
+    \item \textbf{Collection \texttt{if} and spread \texttt{...}} --- Conditional widgets in lists
+    \item \textbf{Cascade operator \texttt{..}} --- Chaining method calls
+    \item \textbf{\texttt{.fold()}} --- Accumulating values across a list
+    \item \textbf{Switch expression} --- Switch that returns a value
+    \item \textbf{CachedNetworkImage} --- Image.network with disk caching
+    \item \textbf{ExpansionTile} --- Collapsible list tile
+    \item \textbf{showModalBottomSheet} --- Bottom sheet panel
+    \item \textbf{PopupMenuButton} --- Floating dropdown menu
+    \item \textbf{Badge} --- Small dot/label overlay on icons
+    \item \textbf{Enhanced enums} --- Enums with fields and constructors
+    \item \textbf{Record types} --- Lightweight unnamed data bundles
+    \item \textbf{Generics (\texttt{<T>})} --- Type-parameterized widgets
+\end{enumerate}
+
+Each is explained in context where it first appears below.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/main.dart} --- The Entry Point}
+
+\begin{lstlisting}
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'app.dart';
+import 'theme/app_theme.dart';
+
+void main() {
+  runApp(
+    const ProviderScope(child: CS2PortfolioApp()),
+  );
+}
+
+class CS2PortfolioApp extends StatelessWidget {
+  const CS2PortfolioApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp.router(
+      title: 'CS2 Portfolio',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.dark,
+      routerConfig: goRouter,
+    );
+  }
+}
+\end{lstlisting}
+
+\texttt{main()} calls \texttt{runApp()} --- same as always. Two new things:
+
+\begin{conceptbox}[title=\textbf{ProviderScope (Riverpod)}]
+In the tutorial, you used \texttt{ValueNotifier} for state --- it works great inside a single widget, but what happens when your Home screen, Inventory screen, and Storage screen all need access to the same item list? You'd have to pass it down through constructors, which gets messy fast.
+
+Riverpod solves this. \texttt{ProviderScope} is an invisible wrapper at the root of your app that acts as a container for all your shared state. Every ``provider'' you create lives inside this scope. Any widget anywhere in the tree can access any provider without it being passed down through constructors. Think of it as a global store that widgets can subscribe to.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{MaterialApp.router}]
+In the tutorial, you used \texttt{MaterialApp} with \texttt{home: MyHomePage()}. That works with Flutter's built-in \texttt{Navigator.push()} / \texttt{Navigator.pop()} navigation.
+
+We're using a package called \textbf{GoRouter} instead, which manages navigation using URL-style paths (like \texttt{/inventory/3} instead of constructing widget instances). When you use GoRouter, you need \texttt{MaterialApp.router} with \texttt{routerConfig:} instead of \texttt{MaterialApp} with \texttt{home:}.
+\end{conceptbox}
+
+\texttt{theme: AppTheme.dark} applies our custom dark theme globally --- every widget in the app inherits these colors, fonts, and styles automatically.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/theme/app\_theme.dart} --- Colors and Styling}
+
+\subsection{CS2Colors --- Rarity Color Utility}
+
+\begin{lstlisting}
+class CS2Colors {
+  static const consumerGrade = Color(0xFFB0C3D9);
+  static const covert = Color(0xFFEB4B4B);
+  static const extraordinary = Color(0xFFFFD700);
+  // ... other colors ...
+
+  static Color fromRarity(String rarity) {
+    return switch (rarity.toLowerCase()) {
+      'consumer grade' || 'consumer' => consumerGrade,
+      'covert' => covert,
+      'extraordinary' || 'contraband' => extraordinary,
+      _ => consumerGrade,
+    };
+  }
+}
+\end{lstlisting}
+
+A utility class with \texttt{static const} color values. \texttt{static} means they belong to the class, not an instance --- you access them as \texttt{CS2Colors.covert} without creating an object. \texttt{const} means the value is fixed at compile time.
+
+\begin{conceptbox}[title=\textbf{Switch Expression (Dart 3)}]
+This is different from the switch \emph{statement} you know. A switch \emph{expression} returns a value:
+
+\begin{lstlisting}[numbers=none]
+// Switch STATEMENT (what you know) --- executes code:
+switch (color) {
+  case 'red':
+    doSomething();
+    break;
+}
+
+// Switch EXPRESSION (Dart 3) --- returns a value:
+final result = switch (color) {
+  'red' => 'warm',     // no case keyword, no break, uses =>
+  'blue' => 'cool',
+  _ => 'unknown',      // _ is the default/wildcard case
+};
+\end{lstlisting}
+
+The \texttt{||} on lines like \texttt{'consumer grade' || 'consumer'} means ``match either string.'' So \texttt{CS2Colors.fromRarity("consumer")} and \texttt{CS2Colors.fromRarity("Consumer Grade")} both return the same color.
+\end{conceptbox}
+
+\subsection{AppTheme --- Global Theme Configuration}
+
+\begin{lstlisting}
+class AppTheme {
+  static ThemeData get dark {
+    return ThemeData(
+      brightness: Brightness.dark,
+      useMaterial3: true,
+      colorScheme: ColorScheme.dark(
+        primary: CS2Colors.milSpec,
+        secondary: CS2Colors.classified,
+        surface: const Color(0xFF1A1A2E),
+      ),
+      scaffoldBackgroundColor: const Color(0xFF0F0F1A),
+      textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
+      cardTheme: CardThemeData(
+        color: const Color(0xFF1A1A2E),
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Color(0xFF0F0F1A),
+        elevation: 0,
+      ),
+    );
+  }
+}
+\end{lstlisting}
+
+\texttt{ThemeData} is Flutter's way of setting defaults for every widget. Instead of styling each Card and AppBar individually, you set it once here:
+
+\begin{itemize}
+    \item \texttt{colorScheme} --- defines core colors. Widgets automatically pick these up. \texttt{primary} is used for highlights, \texttt{surface} for backgrounds.
+    \item \texttt{cardTheme} --- every \texttt{Card()} widget automatically gets this dark color and rounded corners.
+    \item \texttt{appBarTheme} --- every \texttt{AppBar} gets this background and no shadow.
+    \item \texttt{GoogleFonts.interTextTheme()} --- replaces the default font with ``Inter'' everywhere. The \texttt{google\_fonts} package gives access to all Google Fonts.
+\end{itemize}
+
+\textbf{The key idea:} set theme once at the top, all widgets inherit it. You don't have to write \texttt{color: Color(0xFF1A1A2E)} on every card.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/models/cs2\_item.dart} --- The Data Shape}
+
+\begin{lstlisting}
+class CS2Item {
+  final String id;
+  final String name;
+  final String weaponType;
+  final String? wear;       // nullable --- cases/stickers have no wear
+  final bool isStatTrak;
+  final double currentPrice;
+  final int quantity;
+  // ... other fields ...
+
+  const CS2Item({
+    required this.id,
+    required this.name,
+    this.isStatTrak = false,  // default value
+    this.quantity = 1,
+    // ...
+  });
+
+  String get displayName {
+    final prefix = isStatTrak ? 'StatTrak(TM) ' : '';
+    final wearSuffix = wear != null ? ' ($wear)' : '';
+    return '$prefix$name$wearSuffix';
+  }
+}
+\end{lstlisting}
+
+A plain data container. Important details:
+
+\begin{itemize}
+    \item \textbf{All fields are \texttt{final}} --- once set in the constructor, they can never change. This makes the object \emph{immutable}. Riverpod detects changes by comparing old and new objects. If you could mutate fields, Riverpod wouldn't know anything changed. Immutable objects force you to create a new object when data changes, which Riverpod can detect.
+
+    \item \textbf{\texttt{required} vs default values} --- \texttt{required this.name} means you must pass it when creating a \texttt{CS2Item}. \texttt{this.isStatTrak = false} means it defaults to \texttt{false} if you don't.
+
+    \item \textbf{\texttt{const} constructor} --- means the object \emph{can} be created at compile time if all arguments are also const. Dart reuses the same object in memory instead of creating duplicates. It's a performance optimization.
+
+    \item \textbf{\texttt{String get displayName}} --- a computed getter. Not a stored field --- calculates the value each time you access \texttt{item.displayName}. Produces strings like \texttt{"StatTrak\texttrademark{} USP-S | Kill Confirmed (Factory New)"}.
+\end{itemize}
+
+The \texttt{StorageUnit} model is the same pattern but simpler --- just \texttt{id}, \texttt{name}, \texttt{itemCount}, \texttt{totalValue}, and a list of items.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/data/mock\_data.dart} --- Fake Data}
+
+This file exports two variables:
+
+\begin{itemize}
+    \item \texttt{mockItems} --- a \texttt{List<CS2Item>} with 10 items (AK Redline, AWP Asiimov, Butterfly Knife, etc.)
+    \item \texttt{mockStorageUnits} --- a \texttt{List<StorageUnit>} with 2 storage units
+\end{itemize}
+
+These get replaced with real data in Phase 3. They exist purely so the UI has something to display. No new concepts.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/providers/inventory\_provider.dart} --- The State Layer}
+
+This is the most important conceptual file. This is where Riverpod lives.
+
+\begin{lstlisting}
+final inventoryProvider = Provider<List<CS2Item>>((ref) {
+  return mockItems;
+});
+
+final mainInventoryProvider = Provider<List<CS2Item>>((ref) {
+  final items = ref.watch(inventoryProvider);
+  return items
+      .where((item) => item.location == 'inventory')
+      .toList();
+});
+
+final portfolioValueProvider = Provider<double>((ref) {
+  final items = ref.watch(inventoryProvider);
+  return items.fold(
+      0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+});
+
+final topGainersProvider = Provider<List<CS2Item>>((ref) {
+  final items = ref.watch(inventoryProvider);
+  final sorted = [...items]
+    ..sort((a, b) => b.priceChange24h.compareTo(a.priceChange24h));
+  return sorted
+      .where((i) => i.priceChange24h > 0)
+      .take(5)
+      .toList();
+});
+\end{lstlisting}
+
+\begin{conceptbox}[title=\textbf{What is a Provider?}]
+A \texttt{Provider} is a named, globally accessible value that widgets can subscribe to. You declare it as a top-level variable:
+
+\begin{lstlisting}[numbers=none]
+final inventoryProvider = Provider<List<CS2Item>>((ref) {
+  return mockItems;  // this function returns the value
+});
+\end{lstlisting}
+
+Any widget in the app can access this by calling \texttt{ref.watch(inventoryProvider)} --- no need to pass the list through constructors. Compare this to \texttt{ValueNotifier} from your tutorial, which only works within a single widget or requires manual passing.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{ref.watch() --- The Dependency Chain}]
+When \texttt{mainInventoryProvider} calls \texttt{ref.watch(inventoryProvider)}, it says ``I need the value from \texttt{inventoryProvider}, AND if it ever changes, recompute me too.''
+
+Think of it like a \textbf{spreadsheet}:
+\begin{itemize}
+    \item Cell A1 = \texttt{inventoryProvider} (the raw item list)
+    \item Cell B1 = \texttt{mainInventoryProvider} (formula: filter A1 for inventory items)
+    \item Cell C1 = \texttt{portfolioValueProvider} (formula: sum all prices from A1)
+    \item Cell D1 = \texttt{topGainersProvider} (formula: sort A1, take top 5)
+\end{itemize}
+
+If you change cell A1, cells B1, C1, D1 all automatically recalculate. In Phase 3, when we swap \texttt{mockItems} for real Steam API data, every provider that watches it recomputes and every widget rebuilds --- without changing any other code.
+\end{conceptbox}
+
+\subsection{New Dart Syntax in This File}
+
+\begin{conceptbox}[title=\textbf{.fold() --- Accumulating a Value}]
+A list method that accumulates a value across all items, like a for loop in one line:
+
+\begin{lstlisting}[numbers=none]
+// What .fold() does:
+items.fold(0.0, (sum, item) => sum + item.currentPrice);
+
+// Is identical to:
+double sum = 0.0;
+for (final item in items) {
+  sum = sum + item.currentPrice;
+}
+\end{lstlisting}
+
+The first argument (\texttt{0.0}) is the starting value. The function runs for each item, receiving the running \texttt{sum} and the current \texttt{item}.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{Spread [...items] and Cascade ..sort()}]
+
+\begin{lstlisting}[numbers=none]
+final sorted = [...items]
+    ..sort((a, b) => b.priceChange24h.compareTo(a.priceChange24h));
+\end{lstlisting}
+
+Two things happening:
+\begin{enumerate}
+    \item \texttt{[...items]} --- The \texttt{...} spread operator creates a \textbf{copy} of the list. We need a copy because \texttt{.sort()} modifies the list in place, and we don't want to rearrange the original.
+    \item \texttt{..sort()} --- The \texttt{..} cascade operator calls \texttt{.sort()} on the list but \textbf{returns the list itself}. Without cascade, \texttt{.sort()} returns \texttt{void} (nothing), so you couldn't assign it.
+\end{enumerate}
+
+\begin{lstlisting}[numbers=none]
+// Without cascade (two lines):
+final sorted = [...items];
+sorted.sort((a, b) => b.priceChange24h.compareTo(a.priceChange24h));
+
+// With cascade (one line, same result):
+final sorted = [...items]
+    ..sort((a, b) => b.priceChange24h.compareTo(a.priceChange24h));
+\end{lstlisting}
+\end{conceptbox}
+
+\textbf{.where().take(5).toList()} is a chain of list operations:
+\begin{itemize}
+    \item \texttt{.where((i) => i.priceChange24h > 0)} --- filter to only positive changes
+    \item \texttt{.take(5)} --- take only the first 5
+    \item \texttt{.toList()} --- convert back to a \texttt{List} (\texttt{.where()} and \texttt{.take()} return lazy iterables, not lists)
+\end{itemize}
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/app.dart} --- Routing and Navigation}
+
+\subsection{Why GoRouter Instead of Navigator.push/pop?}
+
+\begin{comparisonbox}
+In the tutorial, navigation looked like this:
+
+\begin{lstlisting}[numbers=none]
+// Push a new screen on top (like stacking cards)
+Navigator.push(context,
+    MaterialPageRoute(builder: (context) => DetailScreen()));
+
+// Go back
+Navigator.pop(context);
+\end{lstlisting}
+
+This works, but has problems in bigger apps:
+\begin{itemize}
+    \item \textbf{No URLs} --- you can't deep-link to a specific item
+    \item \textbf{Navigation scattered} --- every screen constructs widget instances
+    \item \textbf{Bottom nav is tricky} --- tapping a tab shouldn't ``push'' on top
+\end{itemize}
+
+GoRouter makes navigation URL-based:
+
+\begin{lstlisting}[numbers=none]
+// Old way (your tutorial):
+Navigator.push(context, MaterialPageRoute(
+  builder: (context) => ItemDetailScreen(id: '3'),
+));
+
+// GoRouter way:
+context.go('/inventory/3');
+\end{lstlisting}
+
+Just a URL string. GoRouter matches it to the right route and builds the screen.
+\end{comparisonbox}
+
+\subsection{The Route Tree}
+
+\begin{lstlisting}
+final goRouter = GoRouter(
+  routes: [
+    ShellRoute(
+      builder: (context, state, child) => AppShell(child: child),
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const HomeScreen(),
+        ),
+        GoRoute(
+          path: '/inventory',
+          builder: (context, state) => const InventoryScreen(),
+          routes: [
+            GoRoute(
+              path: ':itemId',
+              builder: (context, state) {
+                final itemId = state.pathParameters['itemId']!;
+                return ItemDetailScreen(itemId: itemId);
+              },
+            ),
+          ],
+        ),
+        GoRoute(
+          path: '/storage',
+          builder: (context, state) => const StorageScreen(),
+        ),
+        GoRoute(
+          path: '/settings',
+          builder: (context, state) => const SettingsScreen(),
+        ),
+      ],
+    ),
+  ],
+);
+\end{lstlisting}
+
+The route tree maps URL paths to screens:
+
+\begin{lstlisting}[numbers=none]
+ShellRoute (wraps everything with bottom nav bar)
+  /              -> HomeScreen
+  /inventory     -> InventoryScreen
+    :itemId      -> ItemDetailScreen  (e.g., /inventory/3)
+  /storage       -> StorageScreen
+  /settings      -> SettingsScreen
+\end{lstlisting}
+
+\textbf{\texttt{:itemId}} is a path parameter --- a variable part of the URL. When someone navigates to \texttt{/inventory/3}, GoRouter extracts \texttt{3} and puts it in \texttt{state.pathParameters['itemId']}. The \texttt{!} asserts it's not null (it always exists because GoRouter only matches this route when the parameter is present).
+
+Nested \texttt{routes:} means \texttt{/inventory/:itemId} is a child of \texttt{/inventory}. The full path becomes \texttt{/inventory/3}, not just \texttt{3}.
+
+\begin{conceptbox}[title=\textbf{ShellRoute --- Persistent Bottom Nav Bar}]
+Without ShellRoute, navigating from Home to Inventory would destroy the entire Home screen (including the nav bar) and rebuild the Inventory screen (including a new nav bar). The nav bar flickers.
+
+With ShellRoute, the \texttt{AppShell} widget (which has the nav bar) stays permanently mounted. Only the \texttt{child} inside it gets swapped. Think of \texttt{AppShell} as a \textbf{picture frame} --- the frame stays, the picture changes.
+
+\begin{lstlisting}[numbers=none]
+// ShellRoute calls this for EVERY child route:
+builder: (context, state, child) => AppShell(child: child)
+// 'child' is whatever screen GoRouter resolved
+\end{lstlisting}
+\end{conceptbox}
+
+\subsection{AppShell --- The Navigation Wrapper}
+
+\begin{lstlisting}
+class AppShell extends StatelessWidget {
+  final Widget child;
+  const AppShell({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: child,   // current screen (swapped by GoRouter)
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _calculateSelectedIndex(context),
+        onDestinationSelected: (index) =>
+            _onItemTapped(index, context),
+        destinations: const [
+          NavigationDestination(
+              icon: Icon(Icons.dashboard), label: 'Home'),
+          NavigationDestination(
+              icon: Icon(Icons.inventory_2), label: 'Inventory'),
+          NavigationDestination(
+              icon: Icon(Icons.storage), label: 'Storage'),
+          NavigationDestination(
+              icon: Icon(Icons.settings), label: 'Settings'),
+        ],
+      ),
+    );
+  }
+
+  int _calculateSelectedIndex(BuildContext context) {
+    final location =
+        GoRouterState.of(context).uri.toString();
+    if (location.startsWith('/inventory')) return 1;
+    if (location.startsWith('/storage')) return 2;
+    if (location.startsWith('/settings')) return 3;
+    return 0;
+  }
+
+  void _onItemTapped(int index, BuildContext context) {
+    switch (index) {
+      case 0: context.go('/');
+      case 1: context.go('/inventory');
+      case 2: context.go('/storage');
+      case 3: context.go('/settings');
+    }
+  }
+}
+\end{lstlisting}
+
+\begin{itemize}
+    \item \texttt{\_calculateSelectedIndex()} reads the current URL and figures out which tab to highlight.
+    \item \texttt{\_onItemTapped()} navigates when a tab is tapped. \texttt{context.go('/')} tells GoRouter to navigate to that path.
+    \item The switch statement has no \texttt{break} statements --- Dart 3 switch cases no longer fall through by default, so \texttt{break} is unnecessary.
+\end{itemize}
+
+\newpage
+
+% ============================================================
+\section{Reusable Widgets (\texttt{lib/widgets/})}
+
+\subsection{\texttt{price\_change\_badge.dart}}
+
+\begin{lstlisting}
+class PriceChangeBadge extends StatelessWidget {
+  final double percentage;
+  final bool showIcon;
+
+  const PriceChangeBadge({
+    super.key,
+    required this.percentage,
+    this.showIcon = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = percentage == 0
+        ? Colors.grey
+        : percentage > 0
+            ? Colors.greenAccent
+            : Colors.redAccent;
+
+    return Container(
+      padding: ...,
+      decoration: BoxDecoration(
+        color: color.withAlpha(30),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (showIcon) Icon(icon, size: 14, color: color),
+          if (showIcon) const SizedBox(width: 2),
+          Text('${percentage >= 0 ? '+' : ''}'
+              '${percentage.toStringAsFixed(1)}%'),
+        ],
+      ),
+    );
+  }
+}
+\end{lstlisting}
+
+A small badge showing a percentage with color coding (green/red/grey). All widgets here you know (Container, Row, Icon, Text) except one pattern:
+
+\begin{conceptbox}[title=\textbf{Collection \texttt{if} --- Conditional Widgets in Lists}]
+\begin{lstlisting}[numbers=none]
+children: [
+  if (showIcon) Icon(icon, size: 14),  // only include IF true
+  if (showIcon) const SizedBox(width: 2),
+  Text(...),                           // always included
+]
+\end{lstlisting}
+
+In a Dart list, you can use \texttt{if} to conditionally include elements. No curly braces, no else required. This is a Flutter-specific pattern for building widget trees where some widgets should only appear under certain conditions. If \texttt{showIcon} is \texttt{false}, those two widgets simply don't exist in the list.
+\end{conceptbox}
+
+\texttt{.withAlpha(30)} takes a color and makes it mostly transparent (alpha 30 out of 255). Creates the faded background behind the badge text.
+
+\subsection{\texttt{item\_card.dart}}
+
+Layout: \texttt{Card > InkWell > Container > Padding > Row} with three children:
+\begin{enumerate}
+    \item Image on the left
+    \item Name/details in the middle (wrapped in \texttt{Expanded})
+    \item Price on the right
+\end{enumerate}
+
+\begin{conceptbox}[title=\textbf{CachedNetworkImage}]
+You know \texttt{Image.network()} which loads an image from a URL. \texttt{CachedNetworkImage} does the same thing but \textbf{saves the image to the phone's disk} after downloading. Next time the widget builds, it loads from disk instead of re-downloading. It also provides:
+\begin{itemize}
+    \item \texttt{placeholder} --- widget shown while loading
+    \item \texttt{errorWidget} --- widget shown if the URL fails
+\end{itemize}
+\end{conceptbox}
+
+\textbf{\texttt{VoidCallback?}} on the \texttt{onTap} parameter is a type alias for \texttt{void Function()}. It's how you pass tap handlers to child widgets. The \texttt{?} makes it optional.
+
+The subtitle text uses collection \texttt{if} with \texttt{.join()}:
+
+\begin{lstlisting}[numbers=none]
+[
+  if (item.isStatTrak) 'StatTrak(TM)',
+  if (item.wear != null) item.wear!,
+  if (item.quantity > 1) 'x${item.quantity}',
+].join(' . ')
+// Produces: "StatTrak(TM) . Field-Tested . x50"
+\end{lstlisting}
+
+Builds a list of strings conditionally, then joins them with bullet separators.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/screens/home/home\_screen.dart} --- The Dashboard}
+
+This is where Riverpod and GoRouter come together in a real screen.
+
+\begin{lstlisting}
+class HomeScreen extends ConsumerWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final totalValue = ref.watch(portfolioValueProvider);
+    final totalItems = ref.watch(totalItemCountProvider);
+    final storageUnits = ref.watch(storageUnitsProvider);
+    final topGainers = ref.watch(topGainersProvider);
+    final topLosers = ref.watch(topLosersProvider);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('CS2 Portfolio')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          PortfolioSummary(
+            totalValue: totalValue,
+            totalItems: totalItems,
+            storageUnitCount: storageUnits.length,
+          ),
+          const SizedBox(height: 24),
+
+          if (topGainers.isNotEmpty) ...[
+            _SectionHeader(title: 'Top Gainers (24h)', ...),
+            const SizedBox(height: 8),
+            ...topGainers.map(
+              (item) => ItemCard(
+                item: item,
+                onTap: () =>
+                    context.go('/inventory/${item.id}'),
+              ),
+            ),
+          ],
+          // ... top losers section (same pattern) ...
+        ],
+      ),
+    );
+  }
+}
+\end{lstlisting}
+
+\begin{conceptbox}[title=\textbf{ConsumerWidget (Riverpod)}]
+You know \texttt{StatelessWidget} (no state) and \texttt{StatefulWidget} (has state with \texttt{setState}). \texttt{ConsumerWidget} is Riverpod's version of \texttt{StatelessWidget} with one addition --- the \texttt{build()} method gets a \texttt{ref} parameter:
+
+\begin{lstlisting}[numbers=none]
+// StatelessWidget (what you know):
+Widget build(BuildContext context) { ... }
+
+// ConsumerWidget (Riverpod):
+Widget build(BuildContext context, WidgetRef ref) { ... }
+\end{lstlisting}
+
+The \texttt{ref} object is your connection to Riverpod's state. Use it to read providers. Use \texttt{ConsumerWidget} whenever a widget needs to read Riverpod providers.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{ref.watch() in Build Methods}]
+\begin{lstlisting}[numbers=none]
+final totalValue = ref.watch(portfolioValueProvider);
+\end{lstlisting}
+
+This does two things:
+\begin{enumerate}
+    \item Gets the current value from \texttt{portfolioValueProvider}
+    \item \textbf{Subscribes} to changes --- if the provider's value ever changes, this \texttt{build()} method runs again automatically
+\end{enumerate}
+
+This is like \texttt{ValueNotifier} + \texttt{ValueListenableBuilder} from your tutorial, but without the nesting. You don't need to wrap things in builders.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{Collection \texttt{if} with Spread \texttt{...[~]}}]
+\begin{lstlisting}[numbers=none]
+if (topGainers.isNotEmpty) ...[
+  _SectionHeader(...),
+  const SizedBox(height: 8),
+  ...topGainers.map((item) => ItemCard(item: item)),
+  const SizedBox(height: 24),
+],
+\end{lstlisting}
+
+Two concepts combined:
+\begin{enumerate}
+    \item \textbf{Collection \texttt{if}} --- ``only include this stuff IF topGainers has items''
+    \item \textbf{Spread \texttt{...}} --- The \texttt{...[} means ``spread this list into the parent list''
+\end{enumerate}
+
+Without spread, you'd be inserting a \texttt{List} inside a \texttt{List}, which Flutter doesn't want (it wants a flat list of widgets). Spread flattens it.
+
+\texttt{...topGainers.map((item) => ItemCard(...))} converts each \texttt{CS2Item} into an \texttt{ItemCard} widget and spreads them into the children list.
+\end{conceptbox}
+
+\textbf{\texttt{context.go('/inventory/\$\{item.id\}')}} --- GoRouter navigation. Tapping a card navigates to that item's detail screen.
+
+\textbf{\texttt{\_SectionHeader}} --- The underscore \texttt{\_} prefix makes this class \textbf{private to this file}. It's a small helper widget only used on this screen. Common Flutter pattern --- if a widget is only used in one place, keep it in the same file.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/screens/inventory/inventory\_screen.dart}}
+
+The most complex file. It has the filter state, derived provider, main screen widget, and filter bottom sheet.
+
+\subsection{Notifier Providers --- Mutable State}
+
+\begin{lstlisting}
+final searchQueryProvider =
+    NotifierProvider<SearchQueryNotifier, String>(
+  SearchQueryNotifier.new,
+);
+
+class SearchQueryNotifier extends Notifier<String> {
+  @override
+  String build() => '';     // initial value
+  void set(String value) => state = value;  // update method
+}
+\end{lstlisting}
+
+\begin{conceptbox}[title=\textbf{NotifierProvider --- Mutable State in Riverpod}]
+In \texttt{inventory\_provider.dart}, we used \texttt{Provider} --- that's read-only. But filter state \emph{changes} --- the user types in search, selects a rarity, picks a price range.
+
+For mutable state, Riverpod uses \texttt{NotifierProvider} + a \texttt{Notifier} class. Think of \texttt{Notifier} as Riverpod's version of \texttt{ValueNotifier}:
+
+\begin{lstlisting}[numbers=none]
+// ValueNotifier (your tutorial):
+final counter = ValueNotifier<int>(0);
+counter.value = 5;  // update it
+
+// Riverpod Notifier (same idea, but global):
+class SearchQueryNotifier extends Notifier<String> {
+  @override
+  String build() => '';  // initial value (like ValueNotifier(''))
+  void set(String value) => state = value;
+}
+\end{lstlisting}
+
+\texttt{build()} returns the initial value. \texttt{state} is the current value (like \texttt{.value} on ValueNotifier). The \texttt{set()} method updates state --- in Riverpod 3, you can only modify \texttt{state} from inside the Notifier class.
+
+To use in widgets:
+\begin{itemize}
+    \item \textbf{Read the value:} \texttt{ref.watch(searchQueryProvider)} returns the current String
+    \item \textbf{Update the value:} \texttt{ref.read(searchQueryProvider.notifier).set('ak-47')}
+\end{itemize}
+
+Note: \texttt{ref.watch()} to read (and subscribe), \texttt{ref.read()} to write (one-time access, no subscription).
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{Record Types --- Lightweight Data Bundles}]
+\begin{lstlisting}[numbers=none]
+final priceRangeFilterProvider =
+    NotifierProvider<PriceRangeFilterNotifier,
+        ({double min, double max})?>(
+  PriceRangeFilterNotifier.new,
+);
+\end{lstlisting}
+
+\texttt{(\{double min, double max\})} is a Dart \textbf{record type}. It's like a lightweight class without a name. It bundles two named doubles together. The \texttt{?} makes it nullable --- \texttt{null} means ``no price filter active.'' A quick way to bundle values without creating a whole class.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{Enhanced Enums --- Enums with Fields}]
+\begin{lstlisting}[numbers=none]
+enum PriceRange {
+  under1('Under \$1', 0, 1),
+  under10('\$1 - \$10', 1, 10),
+  // ...
+
+  final String label;
+  final double min;
+  final double max;
+  const PriceRange(this.label, this.min, this.max);
+}
+
+// Usage:
+PriceRange.under10.label  // '\$1 - \$10'
+PriceRange.under10.min    // 1
+\end{lstlisting}
+
+Dart allows enums to have fields and constructors, making each enum value carry associated data.
+\end{conceptbox}
+
+\subsection{The Derived Provider --- Combining All Filters}
+
+\begin{lstlisting}
+final filteredInventoryProvider = Provider<List<CS2Item>>((ref) {
+  final items = ref.watch(mainInventoryProvider);
+  final query = ref.watch(searchQueryProvider).toLowerCase();
+  final sort = ref.watch(sortOptionProvider);
+  final rarityFilter = ref.watch(rarityFilterProvider);
+  final weaponTypeFilter = ref.watch(weaponTypeFilterProvider);
+  final priceRange = ref.watch(priceRangeFilterProvider);
+
+  var filtered = items.where((item) {
+    if (query.isNotEmpty
+        && !item.name.toLowerCase().contains(query))
+      return false;
+    if (rarityFilter != null && item.rarity != rarityFilter)
+      return false;
+    if (weaponTypeFilter != null
+        && item.weaponType != weaponTypeFilter)
+      return false;
+    if (priceRange != null
+        && (item.currentPrice < priceRange.min
+            || item.currentPrice >= priceRange.max))
+      return false;
+    return true;
+  }).toList();
+
+  switch (sort) {
+    case SortOption.priceDesc:
+      filtered.sort(
+          (a, b) => b.currentPrice.compareTo(a.currentPrice));
+    // ... other sort options ...
+  }
+  return filtered;
+});
+\end{lstlisting}
+
+This single provider watches \textbf{six} other providers. If ANY of them change --- user types in search, picks a rarity, changes sort order --- this provider recomputes and the screen rebuilds:
+
+\begin{lstlisting}[numbers=none]
+mainInventoryProvider    --+
+searchQueryProvider      --+
+sortOptionProvider       --+--> filteredInventoryProvider
+rarityFilterProvider     --+       --> InventoryScreen rebuilds
+weaponTypeFilterProvider --+
+priceRangeFilterProvider --+
+\end{lstlisting}
+
+This is the reactive dependency chain in action.
+
+\subsection{The Screen Widget}
+
+\begin{lstlisting}
+class InventoryScreen extends ConsumerWidget {
+  // ...
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(filteredInventoryProvider);
+    // ...
+    return Scaffold(
+      appBar: AppBar(
+        actions: [
+          IconButton(
+            icon: Badge(
+              isLabelVisible: _hasActiveFilters(...),
+              smallSize: 8,
+              child: const Icon(Icons.filter_list),
+            ),
+            onPressed: () => _showFilterSheet(context, ref),
+          ),
+          PopupMenuButton<SortOption>(...),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Search TextField
+          TextField(
+            onChanged: (value) {
+              ref.read(searchQueryProvider.notifier)
+                  .set(value);
+            },
+          ),
+          // Item list
+          Expanded(
+            child: ListView.builder(
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                return ItemCard(
+                  item: items[index],
+                  onTap: () =>
+                    context.go('/inventory/${items[index].id}'),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+\end{lstlisting}
+
+New widgets used here:
+
+\begin{conceptbox}[title=\textbf{Badge}]
+A Material widget that overlays a small dot or label on top of another widget (its \texttt{child}). Here it puts a dot on the filter icon to indicate filters are active. \texttt{isLabelVisible} controls whether the dot shows.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{showModalBottomSheet}]
+A Flutter function that slides a panel up from the bottom of the screen. You've seen dialogs with \texttt{showDialog()} --- this is similar but slides from the bottom instead of appearing in the center. \texttt{builder} returns the widget to show inside the sheet.
+\end{conceptbox}
+
+\begin{conceptbox}[title=\textbf{PopupMenuButton}]
+A button that shows a dropdown menu when tapped. You know \texttt{DropdownButton} from your tutorial --- \texttt{PopupMenuButton} is similar but appears as a floating menu anchored to the button (like a right-click context menu), rather than inline.
+\begin{itemize}
+    \item \texttt{itemBuilder} returns the list of menu items
+    \item \texttt{onSelected} fires when the user picks one
+\end{itemize}
+\end{conceptbox}
+
+The \textbf{search TextField} updates \texttt{searchQueryProvider} on every keystroke via \texttt{onChanged}. This triggers \texttt{filteredInventoryProvider} to recompute, which rebuilds the \texttt{ListView} below. This is why the list filters in real-time as you type.
+
+\textbf{\texttt{ListView.builder}} is the efficient version of \texttt{ListView(children: [...])}. It only builds items currently visible on screen, using \texttt{itemBuilder} to build each one on demand as you scroll. Critical for large inventories.
+
+\subsection{The Filter Bottom Sheet}
+
+The \texttt{\_FilterSheet} is a \texttt{ConsumerWidget} (needs \texttt{ref}) that shows three dropdown menus for Rarity, Weapon Type, and Price Range. It uses \texttt{mainAxisSize: MainAxisSize.min} on its Column so the bottom sheet is only as tall as its contents.
+
+``Clear All'' resets all filters to \texttt{null} by calling \texttt{.set(null)} on each notifier.
+
+\begin{conceptbox}[title=\textbf{Generic Widget \texttt{<T>} --- \texttt{\_FilterDropdown<T>}}]
+\begin{lstlisting}[numbers=none]
+class _FilterDropdown<T> extends StatelessWidget {
+  final T value;
+  final List<DropdownMenuItem<T>> items;
+  final ValueChanged<T?> onChanged;
+  // ...
+}
+\end{lstlisting}
+
+The \texttt{T} is a \textbf{type parameter} --- it means ``this widget works with any type.'' We reuse it three times:
+\begin{itemize}
+    \item \texttt{\_FilterDropdown<String?>} for rarity and weapon type
+    \item \texttt{\_FilterDropdown<PriceRange?>} for price range
+\end{itemize}
+
+Same widget, different data types. Generics avoid duplicating the widget code.
+\end{conceptbox}
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/screens/inventory/item\_detail\_screen.dart}}
+
+Receives an \texttt{itemId} from GoRouter's \texttt{:itemId} path parameter, finds the matching item, and displays it.
+
+\begin{lstlisting}
+class ItemDetailScreen extends ConsumerWidget {
+  final String itemId;
+  const ItemDetailScreen({super.key, required this.itemId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(inventoryProvider);
+    final item =
+        items.where((i) => i.id == itemId).firstOrNull;
+
+    if (item == null) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: Text('Item not found')),
+      );
+    }
+    // ... rest of the UI ...
+  }
+}
+\end{lstlisting}
+
+\textbf{\texttt{.firstOrNull}} returns the first matching element, or \texttt{null} if nothing matches. The \texttt{if (item == null)} check handles the case where the ID doesn't exist --- shows an error screen instead of crashing.
+
+The rest is layout you know (Container, ListView, Row, Column, Card) displaying the item's image, price changes (using \texttt{PriceChangeBadge}), and detail rows.
+
+\newpage
+
+% ============================================================
+\section{\texttt{lib/screens/storage/storage\_screen.dart}}
+
+\begin{lstlisting}
+class _StorageUnitCard extends StatelessWidget {
+  final StorageUnit unit;
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat =
+        NumberFormat.currency(symbol: '\$');
+
+    return Card(
+      child: ExpansionTile(
+        leading: const Icon(Icons.storage),
+        title: Text(unit.name),
+        subtitle: Text(
+          '${unit.itemCount} items . '
+          '${currencyFormat.format(unit.totalValue)}'),
+        children: [
+          if (unit.items.isEmpty)
+            Text('Contents available after sync')
+          else
+            ...unit.items.map(
+              (item) => ItemCard(item: item),
+            ),
+        ],
+      ),
+    );
+  }
+}
+\end{lstlisting}
+
+\begin{conceptbox}[title=\textbf{ExpansionTile}]
+A Material widget that shows a header (with \texttt{leading} icon, \texttt{title}, \texttt{subtitle}) and when tapped, \textbf{expands to reveal its \texttt{children}}. It handles the expand/collapse animation automatically. Think of it like a collapsible ListTile. Perfect for ``tap to see contents'' patterns.
+\end{conceptbox}
+
+\textbf{\texttt{NumberFormat.currency()}} from the \texttt{intl} package formats numbers as currency: \texttt{NumberFormat.currency(symbol: '\$').format(1490.0)} produces \texttt{"\$1,490.00"} with commas and decimal places automatically.
+
+\newpage
+
+% ============================================================
+\section{Settings Screen}
+
+The simplest screen --- a list of Cards with TextField, ListTile, and SwitchListTile widgets. Everything in it you know from the tutorial. The switches and inputs don't do anything yet --- placeholders for Phase 2 (auth) and Phase 5 (notifications).
+
+\newpage
+
+% ============================================================
+\section{The Complete Mental Model}
+
+\subsection{App Architecture Flow}
+
+\begin{lstlisting}[numbers=none]
+main.dart
+  +-- ProviderScope (Riverpod state container)
+       +-- MaterialApp.router (dark theme + GoRouter)
+            +-- GoRouter matches URL to screen
+                 +-- ShellRoute (AppShell - bottom nav stays)
+                      +-- Current screen (swapped by GoRouter)
+                           +-- ref.watch() reads providers
+                                +-- Providers derive from
+                                    inventoryProvider
+                                     +-- Currently returns
+                                         mock data
+\end{lstlisting}
+
+\subsection{User Interaction Flow}
+
+\begin{enumerate}
+    \item User types in search $\rightarrow$ \texttt{searchQueryProvider} updates
+    \item \texttt{filteredInventoryProvider} watches it $\rightarrow$ recomputes filtered list
+    \item \texttt{InventoryScreen} watches that $\rightarrow$ rebuilds with new list
+    \item User taps an item $\rightarrow$ \texttt{context.go('/inventory/3')} $\rightarrow$ GoRouter shows \texttt{ItemDetailScreen}
+\end{enumerate}
+
+\subsection{Key Takeaways}
+
+\begin{enumerate}
+    \item \textbf{Riverpod} replaces \texttt{ValueNotifier} for shared state. \texttt{Provider} for read-only data, \texttt{NotifierProvider} for mutable data. \texttt{ref.watch()} subscribes, \texttt{ref.read()} is one-time access.
+
+    \item \textbf{GoRouter} replaces \texttt{Navigator.push/pop} with URL-based navigation. \texttt{ShellRoute} keeps the bottom nav bar persistent.
+
+    \item \textbf{Derived providers} automatically recompute when their dependencies change, creating a reactive chain from data source to UI.
+
+    \item \textbf{Collection \texttt{if} and spread \texttt{...}} let you conditionally include widgets in lists without wrapper widgets or ternary operators.
+
+    \item \textbf{Theme} is set once globally. Individual widgets inherit colors and styles automatically.
+\end{enumerate}
+
+\end{document}

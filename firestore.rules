@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// Firestore Security Rules for CS2 Portfolio Manager
+//
+// These rules control who can read/write data. Firebase Auth
+// provides the user's identity (request.auth.uid = their steamId).
+//
+// Key concept: rules cascade DOWN — if a parent allows access,
+// children inherit it. So be specific at each level.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // User profiles — users can only read/write their own
+    match /users/{steamId} {
+      allow read, write: if request.auth != null && request.auth.uid == steamId;
+    }
+
+    // Inventories — users can only access their own inventory
+    match /inventories/{steamId} {
+      allow read, write: if request.auth != null && request.auth.uid == steamId;
+
+      // Items subcollection inherits the same rule
+      match /items/{itemId} {
+        allow read, write: if request.auth != null && request.auth.uid == steamId;
+      }
+    }
+
+    // Prices — shared collection, any authenticated user can read.
+    // Only Cloud Functions should write (enforced by admin SDK bypassing rules).
+    // For now, allow authenticated users to write too (no Cloud Functions yet).
+    match /prices/{priceId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Alerts — users can only manage their own alerts
+    match /alerts/{alertId} {
+      allow read, write: if request.auth != null
+        && resource.data.steamId == request.auth.uid;
+      allow create: if request.auth != null
+        && request.resource.data.steamId == request.auth.uid;
+    }
+  }
+}
