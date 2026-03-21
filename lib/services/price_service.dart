@@ -241,57 +241,34 @@ class PriceService {
   Stream<Map<String, MarketItemResult>> fetchMarketData(
       List<String> marketHashNames) async* {
     final results = <String, MarketItemResult>{};
-    final remaining = <String>{...marketHashNames};
 
-    // ── Phase 1: Bulk fetch by weapon prefix ──
-    final groups = _groupByPrefix(remaining.toList());
-    debugPrint('Market data fetch: ${groups.length} groups for ${remaining.length} items');
+    debugPrint('Market data fetch: ${marketHashNames.length} items');
 
-    for (final entry in groups.entries) {
-      final prefix = entry.key;
+    for (int i = 0; i < marketHashNames.length; i++) {
+      final name = marketHashNames[i];
 
       try {
-        final batch = await _searchRender(prefix, count: 100);
-
-        for (final result in batch) {
-          if (remaining.contains(result.hashName)) {
-            results[result.hashName] = result;
-            remaining.remove(result.hashName);
-          }
+        debugPrint('[${i + 1}/${marketHashNames.length}] "$name"');
+        // Wrap in quotes for exact phrase matching
+        final query = '"$name"';
+        final batch = await _searchRender(query, count: 10);
+        // Try exact match first, then case-insensitive
+        final match = batch.where((r) => r.hashName == name).firstOrNull
+            ?? batch.where((r) => r.hashName.toLowerCase() == name.toLowerCase()).firstOrNull;
+        if (match != null) {
+          results[name] = match;
+          debugPrint('  → \$${match.price}, image: ${match.iconUrl != null}');
+        } else {
+          debugPrint('  → not found (${batch.length} results, none matched)');
         }
       } catch (e) {
-        debugPrint('Market data fetch failed for "$prefix": $e');
+        debugPrint('  → error: $e');
       }
 
       yield Map.of(results);
 
-      // 1.5s between bulk requests to avoid rate limiting
-      if (entry.key != groups.keys.last) {
-        await Future.delayed(const Duration(milliseconds: 1500));
-      }
-    }
-
-    // ── Phase 2: Individual fetch for items not found in bulk ──
-    if (remaining.isNotEmpty) {
-      debugPrint('Market data: ${remaining.length} items need individual fetch');
-
-      for (final name in remaining.toList()) {
-        try {
-          final batch = await _searchRender(name, count: 5);
-          final match = batch.where((r) => r.hashName == name).firstOrNull;
-          if (match != null) {
-            results[name] = match;
-          }
-        } catch (e) {
-          debugPrint('Individual market data fetch failed for "$name": $e');
-        }
-
-        yield Map.of(results);
-
-        // 3s between individual requests — these are heavier on rate limit
-        if (name != remaining.last) {
-          await Future.delayed(const Duration(seconds: 3));
-        }
+      if (i < marketHashNames.length - 1) {
+        await Future.delayed(const Duration(seconds: 3));
       }
     }
   }
