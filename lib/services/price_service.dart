@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as dev;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -37,6 +38,14 @@ class PriceFetchProgress {
   double get percent => total > 0 ? fetched / total : 0;
 }
 
+/// Result from search/render containing price and image URL.
+class MarketItemResult {
+  final String hashName;
+  final double price;
+  final String? iconUrl;
+  const MarketItemResult({required this.hashName, required this.price, this.iconUrl});
+}
+
 /// Fetches item prices from the Steam Community Market.
 ///
 /// The endpoint returns prices as formatted strings like "$3.50"
@@ -45,7 +54,10 @@ class PriceFetchProgress {
 class PriceService {
   static const _baseUrl =
       'https://steamcommunity.com/market/priceoverview/';
+  static const _searchRenderUrl =
+      'https://steamcommunity.com/market/search/render/';
   static const _delayBetweenRequests = Duration(milliseconds: 1000);
+  static const _bulkDelayBetweenRequests = Duration(milliseconds: 0);
   static const _cacheFileName = 'price_cache.json';
   static const _cacheMaxAge = Duration(hours: 1);
 
@@ -110,15 +122,13 @@ class PriceService {
     }
   }
 
-  /// Fetches prices for a list of items, yielding progress updates.
+  /// Fetches prices for a list of items using bulk search/render.
   ///
-  /// This is a Stream — it emits a [PriceFetchProgress] after each
-  /// item is fetched, so the UI can show "47/153 fetched".
-  /// Unlike a Future (which gives you one result at the end), a Stream
-  /// gives you multiple values over time using `yield`.
-  ///
-  /// The `async*` keyword marks this as an async generator — it can
-  /// both `await` futures and `yield` values to the stream.
+  /// Strategy: group items by weapon prefix (e.g. "AK-47", "AWP"),
+  /// then use Steam's /market/search/render/ endpoint to fetch up to
+  /// 100 items per request. This turns ~153 individual API calls into
+  /// ~30-40 grouped calls. Items not found in bulk fall back to
+  /// individual priceoverview calls.
   Stream<PriceFetchProgress> fetchPrices(List<String> marketHashNames) async* {
     final prices = <String, double>{};
 
@@ -126,30 +136,77 @@ class PriceService {
     final cached = await loadCachedPrices();
     prices.addAll(cached);
 
-    // Filter out items that already have a cached price
-    final toFetch = marketHashNames
-        .where((name) => !cached.containsKey(name))
-        .toList();
+    // Items still needing prices
+    final remaining = <String>{
+      ...marketHashNames.where((name) => !cached.containsKey(name)),
+    };
 
-    dev.log('Price fetch: ${cached.length} cached, ${toFetch.length} to fetch');
+    debugPrint('Price fetch: ${cached.length} cached, ${remaining.length} to fetch');
 
-    // Yield initial progress with cached prices
+    int fetchedCount = marketHashNames.length - remaining.length;
+
     if (cached.isNotEmpty) {
       yield PriceFetchProgress(
-        fetched: cached.length,
+        fetched: fetchedCount,
         total: marketHashNames.length,
         currentItem: 'Loaded ${cached.length} cached prices',
         prices: Map.of(prices),
       );
     }
 
-    int fetchedCount = cached.length;
+    if (remaining.isEmpty) {
+      await _savePriceCache(prices);
+      return;
+    }
 
-    for (final name in toFetch) {
+    // ── Phase 1: Bulk fetch via search/render ──
+    // Group items by the prefix before " | " (e.g. "AK-47", "AWP").
+    // One search per group resolves multiple items at once.
+    final groups = _groupByPrefix(remaining.toList());
+    debugPrint('Bulk fetch: ${groups.length} weapon groups for ${remaining.length} items');
+
+    for (final entry in groups.entries) {
+      final prefix = entry.key;
+      final itemsInGroup = entry.value;
+
+      try {
+        final results = await _searchRender(prefix, count: 100);
+
+        for (final result in results) {
+          if (remaining.contains(result.hashName)) {
+            prices[result.hashName] = result.price;
+            remaining.remove(result.hashName);
+            fetchedCount++;
+          }
+        }
+
+        debugPrint('Bulk "$prefix": found ${itemsInGroup.length - remaining.where((n) => itemsInGroup.contains(n)).length}/${itemsInGroup.length}');
+      } catch (e) {
+        debugPrint('Bulk search failed for "$prefix": $e');
+      }
+
+      yield PriceFetchProgress(
+        fetched: fetchedCount,
+        total: marketHashNames.length,
+        currentItem: 'Bulk: $prefix',
+        prices: Map.of(prices),
+      );
+
+      // Rate limit between bulk requests
+      if (entry.key != groups.keys.last) {
+        await Future.delayed(_bulkDelayBetweenRequests);
+      }
+    }
+
+    // ── Phase 2: Fallback for items not found in bulk ──
+    if (remaining.isNotEmpty) {
+      debugPrint('Falling back to individual fetch for ${remaining.length} items');
+    }
+
+    for (final name in remaining.toList()) {
       final result = await fetchPrice(name);
 
       if (result != null) {
-        // Use lowest_price if available, fall back to median_price
         final price = result.lowestPrice ?? result.medianPrice;
         if (price != null) {
           prices[name] = price;
@@ -165,14 +222,160 @@ class PriceService {
         prices: Map.of(prices),
       );
 
-      // Rate limit: wait between requests (skip delay for the last item)
-      if (name != toFetch.last) {
+      if (name != remaining.last) {
         await Future.delayed(_delayBetweenRequests);
       }
     }
 
-    // Save all prices to cache
     await _savePriceCache(prices);
+  }
+
+  static const _imageBase =
+      'https://community.cloudflare.steamstatic.com/economy/image/';
+
+  /// Fetches prices and image URLs for a list of market hash names
+  /// using the bulk search/render endpoint.
+  ///
+  /// Returns a map of marketHashName → {price, imageUrl}.
+  /// Used by storage provider to price + image storage items.
+  Stream<Map<String, MarketItemResult>> fetchMarketData(
+      List<String> marketHashNames) async* {
+    final results = <String, MarketItemResult>{};
+    final remaining = <String>{...marketHashNames};
+
+    // ── Phase 1: Bulk fetch by weapon prefix ──
+    final groups = _groupByPrefix(remaining.toList());
+    debugPrint('Market data fetch: ${groups.length} groups for ${remaining.length} items');
+
+    for (final entry in groups.entries) {
+      final prefix = entry.key;
+
+      try {
+        final batch = await _searchRender(prefix, count: 100);
+
+        for (final result in batch) {
+          if (remaining.contains(result.hashName)) {
+            results[result.hashName] = result;
+            remaining.remove(result.hashName);
+          }
+        }
+      } catch (e) {
+        debugPrint('Market data fetch failed for "$prefix": $e');
+      }
+
+      yield Map.of(results);
+
+      // 1.5s between bulk requests to avoid rate limiting
+      if (entry.key != groups.keys.last) {
+        await Future.delayed(const Duration(milliseconds: 1500));
+      }
+    }
+
+    // ── Phase 2: Individual fetch for items not found in bulk ──
+    if (remaining.isNotEmpty) {
+      debugPrint('Market data: ${remaining.length} items need individual fetch');
+
+      for (final name in remaining.toList()) {
+        try {
+          final batch = await _searchRender(name, count: 5);
+          final match = batch.where((r) => r.hashName == name).firstOrNull;
+          if (match != null) {
+            results[name] = match;
+          }
+        } catch (e) {
+          debugPrint('Individual market data fetch failed for "$name": $e');
+        }
+
+        yield Map.of(results);
+
+        // 3s between individual requests — these are heavier on rate limit
+        if (name != remaining.last) {
+          await Future.delayed(const Duration(seconds: 3));
+        }
+      }
+    }
+  }
+
+  /// Builds a full Steam CDN image URL from an icon_url hash.
+  static String buildImageUrl(String iconUrl) => '$_imageBase$iconUrl';
+
+  /// Groups market hash names by their prefix before " | ".
+  /// e.g. "AK-47 | Redline (FT)" → group "AK-47"
+  /// Items without " | " (cases, keys) get their own group.
+  Map<String, List<String>> _groupByPrefix(List<String> names) {
+    final groups = <String, List<String>>{};
+    for (final name in names) {
+      final pipeIdx = name.indexOf(' | ');
+      final prefix = pipeIdx > 0 ? name.substring(0, pipeIdx) : name;
+      groups.putIfAbsent(prefix, () => []).add(name);
+    }
+    return groups;
+  }
+
+  /// Fetches items from Steam's search/render endpoint.
+  /// Returns up to [count] results matching the query.
+  Future<List<MarketItemResult>> _searchRender(String query, {int count = 100}) async {
+    final uri = Uri.parse(_searchRenderUrl).replace(queryParameters: {
+      'norender': '1',
+      'appid': '730',
+      'currency': '1', // USD
+      'query': query,
+      'start': '0',
+      'count': count.toString(),
+      'search_descriptions': '0',
+      'sort_column': 'popular',
+      'sort_dir': 'desc',
+    });
+
+    final response = await http.get(uri);
+
+    if (response.statusCode == 429) {
+      debugPrint('search/render rate limited, waiting 15s...');
+      await Future.delayed(const Duration(seconds: 15));
+      final retry = await http.get(uri);
+      if (retry.statusCode == 429) {
+        debugPrint('search/render still rate limited, waiting 30s...');
+        await Future.delayed(const Duration(seconds: 30));
+        final retry2 = await http.get(uri);
+        if (retry2.statusCode != 200) return [];
+        return _parseSearchResults(retry2.body);
+      }
+      if (retry.statusCode != 200) return [];
+      return _parseSearchResults(retry.body);
+    }
+
+    if (response.statusCode != 200) {
+      debugPrint('search/render failed (${response.statusCode}) for "$query"');
+      return [];
+    }
+
+    return _parseSearchResults(response.body);
+  }
+
+  /// Parses the JSON response from search/render into a list of results.
+  List<MarketItemResult> _parseSearchResults(String body) {
+    try {
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      if (data['success'] != true) return [];
+
+      final results = data['results'] as List<dynamic>? ?? [];
+      return results.map((item) {
+        final hashName = item['hash_name'] as String? ?? '';
+        // sell_price is in cents
+        final sellPriceCents = item['sell_price'] as int? ?? 0;
+        // Extract icon_url from asset_description
+        final assetDesc = item['asset_description'] as Map<String, dynamic>?;
+        final iconUrl = assetDesc?['icon_url'] as String?;
+        return MarketItemResult(
+          hashName: hashName,
+          price: sellPriceCents / 100.0,
+          iconUrl: iconUrl,
+        );
+      }).where((r) => r.hashName.isNotEmpty && r.price > 0).toList();
+    } catch (e) {
+      debugPrint('Error parsing search/render response: $e');
+      return [];
+    }
   }
 
   /// Parses a Steam price string like "$3.50" or "€3,50" into a double.

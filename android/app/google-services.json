@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "510847139272",
+    "project_id": "cs2-portfolio",
+    "storage_bucket": "cs2-portfolio.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:510847139272:android:ec820e0b2b2756ed18d4fd",
+        "android_client_info": {
+          "package_name": "com.deportfolio.de_portfolio"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB3PBOvXle3o_Tba0RruAABY9e7kyfK290"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

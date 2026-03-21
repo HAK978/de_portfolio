@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'app.dart';
+import 'firebase_options.dart';
 import 'theme/app_theme.dart';
 
 void main() async {
@@ -16,7 +17,9 @@ void main() async {
   // even if Firebase isn't configured yet. Once you run
   // `flutterfire configure`, this will connect to your project.
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
     dev.log('Firebase initialized');
   } catch (e) {
     dev.log('Firebase not configured yet, running in offline mode: $e');

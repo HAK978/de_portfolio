@@ -1,6 +1,5 @@
-import 'dart:developer' as dev;
-
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/cs2_item.dart';
 
@@ -19,6 +18,14 @@ import '../models/cs2_item.dart';
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
+  /// Tracks the last-synced price per item so we only write changes.
+  /// Key: item id, Value: "steamPrice|csfloatPrice"
+  final Map<String, String> _lastSyncedPrices = {};
+
+  /// If true, skip all writes until the app restarts.
+  /// Set when we get RESOURCE_EXHAUSTED from Firestore.
+  bool _quotaExhausted = false;
+
   // ── User Profile ──────────────────────────────────────────
 
   /// Creates or updates a user document after login.
@@ -27,6 +34,7 @@ class FirestoreService {
     String? displayName,
     String? avatarUrl,
   }) async {
+    if (_quotaExhausted) return;
     await _db.collection('users').doc(steamId).set({
       'displayName': displayName ?? '',
       'avatarUrl': avatarUrl ?? '',
@@ -42,40 +50,88 @@ class FirestoreService {
 
   // ── Inventory ─────────────────────────────────────────────
 
-  /// Saves the full inventory to Firestore.
+  /// Saves inventory to Firestore, but only items whose prices changed.
   ///
-  /// Uses a batch write to update all items at once. Firestore
-  /// batches can hold up to 500 operations — for larger inventories
-  /// we split into multiple batches.
+  /// On first sync (empty _lastSyncedPrices), writes everything.
+  /// On subsequent syncs, compares each item's prices to last sync
+  /// and only writes the diff. This keeps writes low for the free tier.
   Future<void> saveInventory(String steamId, List<CS2Item> items) async {
+    if (_quotaExhausted) {
+      debugPrint('saveInventory: skipping — quota exhausted');
+      return;
+    }
+
+    // Find items that actually changed since last sync
+    final changedItems = <CS2Item>[];
+    final isFirstSync = _lastSyncedPrices.isEmpty;
+
+    for (final item in items) {
+      final priceKey = _priceKey(item);
+      if (_lastSyncedPrices[item.id] != priceKey) {
+        changedItems.add(item);
+      }
+    }
+
+    if (changedItems.isEmpty) {
+      debugPrint('saveInventory: no changes to sync');
+      return;
+    }
+
+    debugPrint('saveInventory: ${changedItems.length}/${items.length} items changed'
+        '${isFirstSync ? " (first sync)" : ""}');
+
     final collectionRef = _db
         .collection('inventories')
         .doc(steamId)
         .collection('items');
 
-    // Process in batches of 500 (Firestore limit)
-    const batchSize = 500;
-    for (int i = 0; i < items.length; i += batchSize) {
+    // Write in batches of 50
+    const batchSize = 50;
+    int written = 0;
+
+    for (int i = 0; i < changedItems.length; i += batchSize) {
       final batch = _db.batch();
-      final end = (i + batchSize).clamp(0, items.length);
-      final chunk = items.sublist(i, end);
+      final end = (i + batchSize).clamp(0, changedItems.length);
+      final chunk = changedItems.sublist(i, end);
 
       for (final item in chunk) {
         final docRef = collectionRef.doc(item.id);
         batch.set(docRef, item.toJson());
       }
 
-      await batch.commit();
-      dev.log('Saved inventory batch: ${i + chunk.length}/${items.length}');
+      final batchNum = i ~/ batchSize + 1;
+      try {
+        await batch.commit().timeout(const Duration(seconds: 20));
+        written += chunk.length;
+        debugPrint('saveInventory: batch $batchNum committed (${chunk.length} items)');
+
+        // Update tracked prices for successfully written items
+        for (final item in chunk) {
+          _lastSyncedPrices[item.id] = _priceKey(item);
+        }
+      } catch (e) {
+        final msg = e.toString();
+        if (msg.contains('RESOURCE_EXHAUSTED') || msg.contains('Quota exceeded')) {
+          debugPrint('saveInventory: QUOTA EXHAUSTED — disabling Firestore writes');
+          _quotaExhausted = true;
+          return;
+        }
+        debugPrint('saveInventory: batch $batchNum FAILED — $e');
+      }
     }
 
-    // Update last sync timestamp
-    await _db.collection('inventories').doc(steamId).set({
-      'itemCount': items.length,
-      'lastSync': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    dev.log('Inventory saved to Firestore: ${items.length} items');
+    // Update metadata only if we wrote something
+    if (written > 0) {
+      try {
+        await _db.collection('inventories').doc(steamId).set({
+          'itemCount': items.length,
+          'lastSync': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+        debugPrint('saveInventory: DONE ($written items written)');
+      } catch (e) {
+        debugPrint('saveInventory: lastSync write failed — $e');
+      }
+    }
   }
 
   /// Loads inventory from Firestore.
@@ -86,9 +142,16 @@ class FirestoreService {
         .collection('items')
         .get();
 
-    return snapshot.docs
+    final items = snapshot.docs
         .map((doc) => CS2Item.fromJson(doc.data()))
         .toList();
+
+    // Populate last-synced prices so next sync only writes changes
+    for (final item in items) {
+      _lastSyncedPrices[item.id] = _priceKey(item);
+    }
+
+    return items;
   }
 
   // ── Prices (shared collection) ────────────────────────────
@@ -100,6 +163,7 @@ class FirestoreService {
     required double currentPrice,
     double? csfloatPrice,
   }) async {
+    if (_quotaExhausted) return;
     await _db.collection('prices').doc(_sanitizeDocId(marketHashName)).set({
       'marketHashName': marketHashName,
       'currentPrice': currentPrice,
@@ -110,7 +174,9 @@ class FirestoreService {
 
   /// Batch-saves prices for multiple items.
   Future<void> savePrices(Map<String, double> prices) async {
-    const batchSize = 500;
+    if (_quotaExhausted) return;
+
+    const batchSize = 50;
     final entries = prices.entries.toList();
 
     for (int i = 0; i < entries.length; i += batchSize) {
@@ -127,10 +193,18 @@ class FirestoreService {
         }, SetOptions(merge: true));
       }
 
-      await batch.commit();
+      try {
+        await batch.commit().timeout(const Duration(seconds: 20));
+      } catch (e) {
+        if (e.toString().contains('RESOURCE_EXHAUSTED')) {
+          _quotaExhausted = true;
+          return;
+        }
+        debugPrint('savePrices: batch failed — $e');
+      }
     }
 
-    dev.log('Saved ${prices.length} prices to Firestore');
+    debugPrint('savePrices: saved ${prices.length} prices');
   }
 
   /// Loads all cached prices from Firestore.
@@ -147,16 +221,19 @@ class FirestoreService {
       }
     }
 
-    dev.log('Loaded ${prices.length} prices from Firestore');
+    debugPrint('Loaded ${prices.length} prices from Firestore');
     return prices;
   }
 
   // ── Helpers ───────────────────────────────────────────────
 
   /// Firestore doc IDs can't contain forward slashes.
-  /// Market hash names like "M4A4 | Asiimov (Field-Tested)" are fine,
-  /// but some edge cases might have slashes.
   String _sanitizeDocId(String name) {
     return name.replaceAll('/', '_');
+  }
+
+  /// Creates a string key from an item's prices for change detection.
+  String _priceKey(CS2Item item) {
+    return '${item.currentPrice}|${item.csfloatPrice ?? 0}';
   }
 }

@@ -1,12 +1,14 @@
 import 'dart:developer' as dev;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
 import '../models/storage_unit.dart';
 import '../services/steam_api_service.dart';
+import 'auth_provider.dart'; // for firestoreServiceProvider
 
 /// Holds the Steam ID the user wants to view.
 ///
@@ -133,14 +135,28 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
 
     final service = ref.read(steamApiServiceProvider);
 
-    // Try loading from cache first
+    // Try loading from local cache first
     final cached = await service.loadInventoryCache(steamId);
     if (cached != null && cached.isNotEmpty) {
-      dev.log('Loaded ${cached.length} items from cache');
+      dev.log('Loaded ${cached.length} items from local cache');
       return cached;
     }
 
-    // No cache — fetch from Steam
+    // No local cache — try Firestore
+    try {
+      final firestore = ref.read(firestoreServiceProvider);
+      final cloudItems = await firestore.loadInventory(steamId);
+      if (cloudItems.isNotEmpty) {
+        dev.log('Loaded ${cloudItems.length} items from Firestore');
+        // Save to local cache so next startup is faster
+        await service.saveInventoryCache(steamId, cloudItems);
+        return cloudItems;
+      }
+    } catch (e) {
+      dev.log('Firestore load failed (offline?): $e');
+    }
+
+    // No cache anywhere — fetch from Steam
     return _fetchFromSteam(steamId);
   }
 
@@ -159,6 +175,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     try {
       final items = await service.fetchInventory(steamId);
       dev.log('Fetched ${items.length} items from Steam');
+      _syncToFirestore(steamId, items);
       return items;
     } catch (e, stack) {
       dev.log('Error fetching inventory: $e\n$stack');
@@ -174,18 +191,18 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
   /// Uses copyWith to create new item instances with updated prices,
   /// since CS2Item is immutable. Only updates the state if the
   /// inventory is already loaded (not loading or error).
-  void updatePrices(Map<String, double> prices) {
+  ///
+  /// When [persist] is false, only updates in-memory state (fast).
+  /// When true, also writes to disk cache and syncs to Firestore.
+  /// Call with persist:false during streaming, persist:true at the end.
+  void updatePrices(Map<String, double> prices, {bool persist = true}) {
     final items = state.when(
       data: (items) => items,
       loading: () => null,
       error: (_, _) => null,
     );
-    if (items == null) {
-      dev.log('updatePrices: state has no data, skipping');
-      return;
-    }
+    if (items == null) return;
 
-    dev.log('updatePrices: updating ${prices.length} prices on ${items.length} items');
     final updatedItems = items.map((item) {
       final price = prices[item.marketHashName];
       if (price != null) {
@@ -195,22 +212,25 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     }).toList();
 
     state = AsyncValue.data(updatedItems);
-    _updateCache(updatedItems);
+
+    if (persist) {
+      _updateCache(updatedItems);
+      final steamId = ref.read(steamIdProvider);
+      if (steamId.isNotEmpty) _syncToFirestore(steamId, updatedItems);
+    }
   }
 
   /// Updates CSFloat prices separately from Steam Market prices.
-  void updateCsfloatPrices(Map<String, double> prices) {
+  ///
+  /// Same [persist] logic as [updatePrices].
+  void updateCsfloatPrices(Map<String, double> prices, {bool persist = true}) {
     final items = state.when(
       data: (items) => items,
       loading: () => null,
       error: (_, _) => null,
     );
-    if (items == null) {
-      dev.log('updateCsfloatPrices: state has no data, skipping');
-      return;
-    }
+    if (items == null) return;
 
-    dev.log('updateCsfloatPrices: updating ${prices.length} prices on ${items.length} items');
     final updatedItems = items.map((item) {
       final price = prices[item.marketHashName];
       if (price != null) {
@@ -220,7 +240,12 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     }).toList();
 
     state = AsyncValue.data(updatedItems);
-    _updateCache(updatedItems);
+
+    if (persist) {
+      _updateCache(updatedItems);
+      final steamId = ref.read(steamIdProvider);
+      if (steamId.isNotEmpty) _syncToFirestore(steamId, updatedItems);
+    }
   }
 
   /// Saves current inventory state to cache (preserves prices).
@@ -229,6 +254,42 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     if (steamId.isEmpty) return;
     final service = ref.read(steamApiServiceProvider);
     await service.saveInventoryCache(steamId, items);
+  }
+
+  /// Persists the current inventory state to disk cache and Firestore.
+  /// Call this once after a batch of price updates completes.
+  void persistCurrentState() {
+    final items = state.when(
+      data: (items) => items,
+      loading: () => null,
+      error: (_, _) => null,
+    );
+    if (items == null) {
+      debugPrint('persistCurrentState: no data to persist');
+      return;
+    }
+
+    debugPrint('persistCurrentState: persisting ${items.length} items');
+    _updateCache(items);
+    final steamId = ref.read(steamIdProvider);
+    if (steamId.isNotEmpty) {
+      _syncToFirestore(steamId, items);
+    } else {
+      debugPrint('persistCurrentState: no steamId, skipping Firestore');
+    }
+  }
+
+  /// Pushes inventory to Firestore in the background.
+  /// Fire-and-forget — failures are logged but don't block the UI.
+  void _syncToFirestore(String steamId, List<CS2Item> items) async {
+    debugPrint('_syncToFirestore: starting upload for $steamId (${items.length} items)');
+    try {
+      final firestore = ref.read(firestoreServiceProvider);
+      await firestore.saveInventory(steamId, items);
+      debugPrint('_syncToFirestore: SUCCESS — synced ${items.length} items');
+    } catch (e) {
+      debugPrint('_syncToFirestore: FAILED — $e');
+    }
   }
 
   /// Force re-fetch the inventory from Steam (ignores cache).
@@ -253,9 +314,11 @@ final mainInventoryProvider = Provider<List<CS2Item>>((ref) {
   );
 });
 
-/// Provides storage units with their items.
-/// In Phase 6 this will fetch real storage unit contents.
+/// Provides storage units from the storage provider.
+/// Used by the home screen for stats.
 final storageUnitsProvider = Provider<List<StorageUnit>>((ref) {
+  // Import from storage_provider when it's loaded
+  // For now returns empty — storage screen manages its own state
   return <StorageUnit>[];
 });
 

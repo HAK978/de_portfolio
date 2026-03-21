@@ -132,11 +132,13 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
         );
 
         // Merge prices into inventory on each update so the UI
-        // updates progressively as prices come in
-        ref.read(inventoryProvider.notifier).updatePrices(progress.prices);
+        // updates progressively — persist:false skips disk/cloud writes
+        ref.read(inventoryProvider.notifier).updatePrices(progress.prices, persist: false);
       },
       onDone: () {
         dev.log('Price fetch complete: ${state.fetched}/${state.total}');
+        // Persist once at the end — writes cache + syncs Firestore
+        ref.read(inventoryProvider.notifier).persistCurrentState();
         state = state.copyWith(isFetching: false);
         _subscription = null;
       },
@@ -253,10 +255,11 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
           total: progress.total,
           currentItem: progress.currentItem,
         );
-        ref.read(inventoryProvider.notifier).updateCsfloatPrices(progress.prices);
+        ref.read(inventoryProvider.notifier).updateCsfloatPrices(progress.prices, persist: false);
       },
       onDone: () {
         dev.log('CSFloat fetch complete: ${state.fetched}/${state.total}');
+        ref.read(inventoryProvider.notifier).persistCurrentState();
         state = state.copyWith(isFetching: false);
         _subscription = null;
       },

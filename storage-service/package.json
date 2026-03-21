@@ -1,0 +1,17 @@
+{
+  "name": "cs2-storage-service",
+  "version": "1.0.0",
+  "description": "Local Node.js service for fetching CS2 storage unit contents via Game Coordinator",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@node-steam/vdf": "^2.2.0",
+    "axios": "^1.13.6",
+    "express": "^4.21.0",
+    "globaloffensive": "^3.1.0",
+    "steam-session": "^1.8.0",
+    "steam-user": "^5.2.0"
+  }
+}
