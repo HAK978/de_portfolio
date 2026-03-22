@@ -1,6 +1,7 @@
 import 'dart:convert';
-import 'dart:developer' as dev;
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -233,9 +234,9 @@ class SteamApiService {
       };
 
       await file.writeAsString(jsonEncode(data));
-      dev.log('Cached ${items.length} inventory items to disk');
+      debugPrint('Cached ${items.length} inventory items to disk');
     } catch (e) {
-      dev.log('Error saving inventory cache: $e');
+      debugPrint('Error saving inventory cache: $e');
     }
   }
 
@@ -262,10 +263,10 @@ class SteamApiService {
           .map((json) => CS2Item.fromJson(json as Map<String, dynamic>))
           .toList();
 
-      dev.log('Loaded ${items.length} items from inventory cache');
+      debugPrint('Loaded ${items.length} items from inventory cache');
       return items;
     } catch (e) {
-      dev.log('Error loading inventory cache: $e');
+      debugPrint('Error loading inventory cache: $e');
       return null;
     }
   }

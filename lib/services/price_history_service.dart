@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -112,7 +111,7 @@ class PriceHistoryService {
     try {
       final response = await http.get(
         Uri.parse('https://open.er-api.com/v6/latest/USD'),
-      );
+      ).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final rates = data['rates'] as Map<String, dynamic>?;
@@ -161,7 +160,7 @@ class PriceHistoryService {
       return null;
     }
 
-    debugPrint('FETCH_HISTORY cookie: ${steamLoginCookie!.substring(0, 20)}...');
+    debugPrint('FETCH_HISTORY cookie: present');
 
     final uri = Uri.parse(_baseUrl).replace(queryParameters: {
       'appid': '730',
@@ -234,7 +233,7 @@ class PriceHistoryService {
 
       return points;
     } catch (e) {
-      dev.log('Error fetching price history for $marketHashName: $e');
+      debugPrint('Error fetching price history for $marketHashName: $e');
       return null;
     }
   }
@@ -366,10 +365,10 @@ class PriceHistoryService {
           .map((p) => PriceHistoryPoint.fromJson(p as Map<String, dynamic>))
           .toList();
 
-      dev.log('Loaded ${points.length} cached history points for: $marketHashName');
+      debugPrint('Loaded ${points.length} cached history points for: $marketHashName');
       return points;
     } catch (e) {
-      dev.log('Error loading history cache for $marketHashName: $e');
+      debugPrint('Error loading history cache for $marketHashName: $e');
       return null;
     }
   }
@@ -390,7 +389,7 @@ class PriceHistoryService {
 
       await file.writeAsString(jsonEncode(data));
     } catch (e) {
-      dev.log('Error saving history cache for $marketHashName: $e');
+      debugPrint('Error saving history cache for $marketHashName: $e');
     }
   }
 }

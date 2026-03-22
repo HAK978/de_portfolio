@@ -1,5 +1,3 @@
-import 'dart:developer' as dev;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -116,7 +114,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _saveSteamId() {
     final id = _extractSteamId(_steamIdController.text);
-    dev.log('_saveSteamId called, extracted id: "$id" from "${_steamIdController.text}"');
+    debugPrint('_saveSteamId called, extracted id: "$id" from "${_steamIdController.text}"');
     if (id.isEmpty) return;
 
     _steamIdController.text = id;

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -115,7 +114,7 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
 
     // Get unique marketable item names (skip non-tradeable items)
     final uniqueNames = _getMarketableNames(items);
-    dev.log('Starting price fetch for ${uniqueNames.length} marketable items');
+    debugPrint('Starting price fetch for ${uniqueNames.length} marketable items');
 
     state = PriceFetchState(
       isFetching: true,
@@ -140,7 +139,7 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
         ref.read(inventoryProvider.notifier).updatePrices(progress.prices, persist: false);
       },
       onDone: () {
-        dev.log('Price fetch complete: ${state.fetched}/${state.total}');
+        debugPrint('Price fetch complete: ${state.fetched}/${state.total}');
         // Persist once at the end — writes cache + syncs Firestore
         ref.read(inventoryProvider.notifier).persistCurrentState();
         // Sync prices to shared Firestore collection (for future spike alerts)
@@ -149,7 +148,7 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
         _subscription = null;
       },
       onError: (error) {
-        dev.log('Price fetch error: $error');
+        debugPrint('Price fetch error: $error');
         state = state.copyWith(
           isFetching: false,
           error: error.toString(),
@@ -160,7 +159,7 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
   }
 
   /// Syncs fetched prices to the shared Firestore prices collection.
-  void _syncPricesToFirestore(Map<String, double> prices) async {
+  Future<void> _syncPricesToFirestore(Map<String, double> prices) async {
     debugPrint('_syncPricesToFirestore: ${prices.length} prices to sync');
     if (prices.isEmpty) return;
     try {
@@ -211,7 +210,7 @@ class CsfloatApiKeyNotifier extends Notifier<String> {
         }
       }
     } catch (e) {
-      dev.log('Error loading CSFloat API key: $e');
+      debugPrint('Error loading CSFloat API key: $e');
     }
   }
 
@@ -221,7 +220,7 @@ class CsfloatApiKeyNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       await file.writeAsString(key);
     } catch (e) {
-      dev.log('Error saving CSFloat API key: $e');
+      debugPrint('Error saving CSFloat API key: $e');
     }
   }
 }
@@ -242,7 +241,7 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
   @override
   PriceFetchState build() => const PriceFetchState();
 
-  void fetchPrices() async {
+  Future<void> fetchPrices() async {
     if (state.isFetching) return;
 
     final items = ref.read(inventoryProvider).when(
@@ -301,14 +300,14 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
         ref.read(inventoryProvider.notifier).updateCsfloatPrices(progress.prices, persist: false);
       },
       onDone: () {
-        dev.log('CSFloat fetch complete: ${state.fetched}/${state.total}');
+        debugPrint('CSFloat fetch complete: ${state.fetched}/${state.total}');
         ref.read(inventoryProvider.notifier).persistCurrentState();
         _syncCsfloatPricesToFirestore(lastPrices);
         state = state.copyWith(isFetching: false);
         _subscription = null;
       },
       onError: (error) {
-        dev.log('CSFloat fetch error: $error');
+        debugPrint('CSFloat fetch error: $error');
         state = state.copyWith(
           isFetching: false,
           error: error.toString(),

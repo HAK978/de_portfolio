@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -69,15 +71,20 @@ final authProvider = NotifierProvider<AuthNotifier, AuthState>(
 );
 
 class AuthNotifier extends Notifier<AuthState> {
+  StreamSubscription<User?>? _authSubscription;
+
   @override
   AuthState build() {
     _listenToAuthChanges();
+    ref.onDispose(() {
+      _authSubscription?.cancel();
+    });
     return const AuthState();
   }
 
   void _listenToAuthChanges() {
     try {
-      FirebaseAuth.instance.authStateChanges().listen((user) {
+      _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
         if (user != null) {
           debugPrint('Firebase auth: signed in as ${user.uid}');
           state = state.copyWith(

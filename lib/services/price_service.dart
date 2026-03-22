@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -77,7 +76,7 @@ class PriceService {
 
       if (response.statusCode == 429) {
         // Rate limited — wait longer and retry once
-        dev.log('Rate limited, waiting 5s before retry: $marketHashName');
+        debugPrint('Rate limited, waiting 5s before retry: $marketHashName');
         await Future.delayed(const Duration(seconds: 5));
         final retry = await http.get(uri);
         if (retry.statusCode == 200) {
@@ -97,14 +96,14 @@ class PriceService {
       }
 
       if (response.statusCode != 200) {
-        dev.log('Price fetch failed (${response.statusCode}) for: $marketHashName');
+        debugPrint('Price fetch failed (${response.statusCode}) for: $marketHashName');
         return null;
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (data['success'] != true) {
-        dev.log('Price API returned success=false for: $marketHashName');
+        debugPrint('Price API returned success=false for: $marketHashName');
         return null;
       }
 
@@ -117,7 +116,7 @@ class PriceService {
         ),
       );
     } catch (e) {
-      dev.log('Error fetching price for $marketHashName: $e');
+      debugPrint('Error fetching price for $marketHashName: $e');
       return null;
     }
   }
@@ -402,7 +401,7 @@ class PriceService {
       final timestamp = data['timestamp'] as int? ?? 0;
       final cacheTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
       if (DateTime.now().difference(cacheTime) > _cacheMaxAge) {
-        dev.log('Price cache expired, will re-fetch');
+        debugPrint('Price cache expired, will re-fetch');
         return {};
       }
 
@@ -410,10 +409,10 @@ class PriceService {
               ?.map((key, value) => MapEntry(key, (value as num).toDouble())) ??
           {};
 
-      dev.log('Loaded ${prices.length} prices from cache');
+      debugPrint('Loaded ${prices.length} prices from cache');
       return prices;
     } catch (e) {
-      dev.log('Error loading price cache: $e');
+      debugPrint('Error loading price cache: $e');
       return {};
     }
   }
@@ -430,9 +429,9 @@ class PriceService {
       };
 
       await file.writeAsString(jsonEncode(data));
-      dev.log('Saved ${prices.length} prices to cache');
+      debugPrint('Saved ${prices.length} prices to cache');
     } catch (e) {
-      dev.log('Error saving price cache: $e');
+      debugPrint('Error saving price cache: $e');
     }
   }
 }

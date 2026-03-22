@@ -1,4 +1,3 @@
-import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -41,12 +40,12 @@ class SteamIdNotifier extends Notifier<String> {
       if (file.existsSync()) {
         final id = await file.readAsString();
         if (id.trim().isNotEmpty) {
-          dev.log('Loaded saved Steam ID: $id');
+          debugPrint('Loaded saved Steam ID: $id');
           state = id.trim();
         }
       }
     } catch (e) {
-      dev.log('Error loading saved Steam ID: $e');
+      debugPrint('Error loading saved Steam ID: $e');
     }
   }
 
@@ -56,7 +55,7 @@ class SteamIdNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       await file.writeAsString(id);
     } catch (e) {
-      dev.log('Error saving Steam ID: $e');
+      debugPrint('Error saving Steam ID: $e');
     }
   }
 }
@@ -131,7 +130,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
   @override
   Future<List<CS2Item>> build() async {
     final steamId = ref.watch(steamIdProvider);
-    dev.log('InventoryNotifier.build() called, steamId: "$steamId"');
+    debugPrint('InventoryNotifier.build() called, steamId: "$steamId"');
     if (steamId.isEmpty) return [];
 
     final service = ref.read(steamApiServiceProvider);
@@ -139,7 +138,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     // Try loading from local cache first
     final cached = await service.loadInventoryCache(steamId);
     if (cached != null && cached.isNotEmpty) {
-      dev.log('Loaded ${cached.length} items from local cache');
+      debugPrint('Loaded ${cached.length} items from local cache');
       return cached;
     }
 
@@ -149,13 +148,13 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       try {
         final cloudItems = await firestore.loadInventory(steamId);
         if (cloudItems.isNotEmpty) {
-          dev.log('Loaded ${cloudItems.length} items from Firestore');
+          debugPrint('Loaded ${cloudItems.length} items from Firestore');
           // Save to local cache so next startup is faster
           await service.saveInventoryCache(steamId, cloudItems);
           return cloudItems;
         }
       } catch (e) {
-        dev.log('Firestore load failed (offline?): $e');
+        debugPrint('Firestore load failed (offline?): $e');
       }
     }
 
@@ -177,11 +176,11 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
 
     try {
       final items = await service.fetchInventory(steamId);
-      dev.log('Fetched ${items.length} items from Steam');
+      debugPrint('Fetched ${items.length} items from Steam');
       _syncToFirestore(steamId, items);
       return items;
     } catch (e, stack) {
-      dev.log('Error fetching inventory: $e\n$stack');
+      debugPrint('Error fetching inventory: $e\n$stack');
       rethrow;
     } finally {
       service.onProgress = null;
@@ -278,7 +277,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
 
   /// Pushes inventory to Firestore in the background.
   /// Fire-and-forget — failures are logged but don't block the UI.
-  void _syncToFirestore(String steamId, List<CS2Item> items) async {
+  Future<void> _syncToFirestore(String steamId, List<CS2Item> items) async {
     try {
       final firestore = ref.read(firestoreServiceProvider);
       await firestore.saveInventory(steamId, items);
@@ -290,7 +289,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
   /// Force re-fetch the inventory from Steam (ignores cache).
   Future<void> refresh() async {
     final steamId = ref.read(steamIdProvider);
-    dev.log('refresh() called, steamId: "$steamId"');
+    debugPrint('refresh() called, steamId: "$steamId"');
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       if (steamId.isEmpty) return [];

@@ -102,7 +102,7 @@ class CsfloatService {
   /// so the UI can show the same progress pattern.
   Stream<PriceFetchProgress> fetchPrices(List<String> marketHashNames) async* {
     debugPrint('═══ CSFloat fetch start ═══');
-    debugPrint('CSF API key: ${apiKey != null ? "YES (${apiKey!.substring(0, 8)}...)" : "NO KEY"}');
+    debugPrint('CSF API key: ${apiKey != null ? "YES" : "NO KEY"}');
     debugPrint('CSF items requested: ${marketHashNames.length}');
 
     final prices = <String, double>{};

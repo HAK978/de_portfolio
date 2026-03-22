@@ -238,21 +238,27 @@ class StorageNotifier extends Notifier<StorageState> {
 
   /// Manually fetch Steam Market prices + images for a storage unit.
   Future<void> fetchSteamPrices(String casketId) async {
-    final unit = state.units.firstWhere((u) => u.id == casketId);
+    final units = state.units.where((u) => u.id == casketId);
+    if (units.isEmpty) return;
+    final unit = units.first;
     if (unit.items.isEmpty) return;
     await _fetchMarketData(casketId, unit.items);
   }
 
   /// Manually fetch CSFloat prices for a storage unit.
   Future<void> fetchCsfloatPrices(String casketId) async {
-    final unit = state.units.firstWhere((u) => u.id == casketId);
+    final units = state.units.where((u) => u.id == casketId);
+    if (units.isEmpty) return;
+    final unit = units.first;
     if (unit.items.isEmpty) return;
     await _fetchCsfloatData(casketId, unit.items);
   }
 
   /// Fetch Steam + CSFloat prices in parallel.
   Future<void> fetchAllPrices(String casketId) async {
-    final unit = state.units.firstWhere((u) => u.id == casketId);
+    final units = state.units.where((u) => u.id == casketId);
+    if (units.isEmpty) return;
+    final unit = units.first;
     if (unit.items.isEmpty) return;
     await Future.wait([
       _fetchMarketData(casketId, unit.items),
@@ -308,8 +314,10 @@ class StorageNotifier extends Notifier<StorageState> {
       }
 
       // Save to cache after steam prices complete
-      final finalUnit = state.units.firstWhere((u) => u.id == casketId);
-      await _saveCache(casketId, finalUnit.items);
+      final finalUnits = state.units.where((u) => u.id == casketId);
+      if (finalUnits.isNotEmpty) {
+        await _saveCache(casketId, finalUnits.first.items);
+      }
     } catch (e) {
       debugPrint('Steam market data fetch failed for $casketId: $e');
     } finally {
@@ -370,8 +378,10 @@ class StorageNotifier extends Notifier<StorageState> {
         );
       }
 
-      final finalUnit = state.units.firstWhere((u) => u.id == casketId);
-      await _saveCache(casketId, finalUnit.items);
+      final finalUnits = state.units.where((u) => u.id == casketId);
+      if (finalUnits.isNotEmpty) {
+        await _saveCache(casketId, finalUnits.first.items);
+      }
     } catch (e) {
       debugPrint('CSFloat data fetch failed for $casketId: $e');
     } finally {
@@ -387,7 +397,9 @@ class StorageNotifier extends Notifier<StorageState> {
   /// Merges updates into the current state items for a casket.
   /// Reads the latest items from state so parallel fetches don't overwrite each other.
   void _mergeItemUpdates(String casketId, CS2Item Function(CS2Item) updater, {bool recalcValue = false}) {
-    final currentUnit = state.units.firstWhere((u) => u.id == casketId);
+    final currentUnits = state.units.where((u) => u.id == casketId);
+    if (currentUnits.isEmpty) return;
+    final currentUnit = currentUnits.first;
     final updatedItems = currentUnit.items.map(updater).toList();
 
     final totalValue = recalcValue

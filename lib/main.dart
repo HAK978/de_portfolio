@@ -1,5 +1,3 @@
-import 'dart:developer' as dev;
-
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,9 +18,9 @@ void main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-    dev.log('Firebase initialized');
+    debugPrint('Firebase initialized');
   } catch (e) {
-    dev.log('Firebase not configured yet, running in offline mode: $e');
+    debugPrint('Firebase not configured yet, running in offline mode: $e');
   }
 
   runApp(

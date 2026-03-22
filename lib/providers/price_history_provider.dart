@@ -1,5 +1,6 @@
-import 'dart:developer' as dev;
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
@@ -37,11 +38,11 @@ class SteamLoginCookieNotifier extends Notifier<String> {
         final cookie = await file.readAsString();
         if (cookie.trim().isNotEmpty) {
           state = cookie.trim();
-          dev.log('Loaded Steam login cookie from disk');
+          debugPrint('Loaded Steam login cookie from disk');
         }
       }
     } catch (e) {
-      dev.log('Error loading Steam login cookie: $e');
+      debugPrint('Error loading Steam login cookie: $e');
     }
   }
 
@@ -51,7 +52,7 @@ class SteamLoginCookieNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       await file.writeAsString(cookie);
     } catch (e) {
-      dev.log('Error saving Steam login cookie: $e');
+      debugPrint('Error saving Steam login cookie: $e');
     }
   }
 }
