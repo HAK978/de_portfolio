@@ -119,7 +119,6 @@ class StorageNotifier extends Notifier<StorageState> {
       }).toList();
 
       state = state.copyWith(isLoading: false, units: units);
-      debugPrint('Fetched ${units.length} storage units');
     } catch (e) {
       debugPrint('Failed to fetch caskets: $e');
       state = state.copyWith(isLoading: false, error: e.toString());
@@ -164,7 +163,6 @@ class StorageNotifier extends Notifier<StorageState> {
 
       final newLoading = {...state.loadingCaskets}..remove(casketId);
       state = state.copyWith(units: updatedUnits, loadingCaskets: newLoading);
-      debugPrint('Loaded $casketId: ${items.length} raw → ${grouped.length} unique items (${cached.length} cached)');
     } catch (e) {
       debugPrint('Failed to fetch contents for $casketId: $e');
       final newLoading = {...state.loadingCaskets}..remove(casketId);
@@ -246,7 +244,6 @@ class StorageNotifier extends Notifier<StorageState> {
       // Save to cache after steam prices complete
       final finalUnit = state.units.firstWhere((u) => u.id == casketId);
       await _saveCache(casketId, finalUnit.items);
-      debugPrint('Finished Steam pricing for casket $casketId');
     } catch (e) {
       debugPrint('Steam market data fetch failed for $casketId: $e');
     } finally {
@@ -271,7 +268,6 @@ class StorageNotifier extends Notifier<StorageState> {
       apiKey = ref.read(csfloatApiKeyProvider);
     }
     final service = CsfloatService(apiKey: apiKey.isNotEmpty ? apiKey : null);
-    debugPrint('CSFloat: apiKey=${apiKey.isNotEmpty ? "set" : "NOT SET"}');
 
     state = state.copyWith(
       pricingCaskets: {...state.pricingCaskets, key},
@@ -289,13 +285,11 @@ class StorageNotifier extends Notifier<StorageState> {
 
     try {
       int fetched = 0;
-      debugPrint('CSFloat: starting fetch, apiKey=${apiKey.isNotEmpty ? "set" : "NOT SET"}');
 
       await for (final progress in service.fetchPrices(marketHashNames)) {
         fetched = progress.fetched;
 
         final prices = progress.prices;
-        debugPrint('CSFloat progress: $fetched/$total, prices found: ${prices.length}');
         _mergeItemUpdates(casketId, (item) {
           final price = prices[item.marketHashName];
           if (price == null) return item;
@@ -310,16 +304,8 @@ class StorageNotifier extends Notifier<StorageState> {
         );
       }
 
-      // Save to cache after CSFloat prices complete
       final finalUnit = state.units.firstWhere((u) => u.id == casketId);
-      final withCsf = finalUnit.items.where((i) => i.csfloatPrice != null).length;
-      debugPrint('CSFloat done: $withCsf/${finalUnit.items.length} items have csfloatPrice');
-      if (withCsf > 0) {
-        final sample = finalUnit.items.firstWhere((i) => i.csfloatPrice != null);
-        debugPrint('  Sample: ${sample.marketHashName} steam=\$${sample.currentPrice} csf=\$${sample.csfloatPrice}');
-      }
       await _saveCache(casketId, finalUnit.items);
-      debugPrint('Finished CSFloat pricing for casket $casketId');
     } catch (e) {
       debugPrint('CSFloat data fetch failed for $casketId: $e');
     } finally {
@@ -336,12 +322,7 @@ class StorageNotifier extends Notifier<StorageState> {
   /// Reads the latest items from state so parallel fetches don't overwrite each other.
   void _mergeItemUpdates(String casketId, CS2Item Function(CS2Item) updater, {bool recalcValue = false}) {
     final currentUnit = state.units.firstWhere((u) => u.id == casketId);
-    final csfCount = currentUnit.items.where((i) => i.csfloatPrice != null).length;
     final updatedItems = currentUnit.items.map(updater).toList();
-    final newCsfCount = updatedItems.where((i) => i.csfloatPrice != null).length;
-    if (csfCount != newCsfCount) {
-      debugPrint('WARNING: csfloatPrice count changed in merge: $csfCount → $newCsfCount');
-    }
 
     final totalValue = recalcValue
         ? updatedItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity))
@@ -375,7 +356,6 @@ class StorageNotifier extends Notifier<StorageState> {
         'items': items.map((i) => i.toJson()).toList(),
       };
       await file.writeAsString(jsonEncode(data));
-      debugPrint('Cached ${items.length} items for casket $casketId');
     } catch (e) {
       debugPrint('Failed to save storage cache: $e');
     }
@@ -398,7 +378,6 @@ class StorageNotifier extends Notifier<StorageState> {
         final item = CS2Item.fromJson(json as Map<String, dynamic>);
         map[item.marketHashName] = item;
       }
-      debugPrint('Loaded ${map.length} cached items for casket $casketId');
       return map;
     } catch (e) {
       debugPrint('Failed to load storage cache: $e');

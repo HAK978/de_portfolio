@@ -265,31 +265,23 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       loading: () => null,
       error: (_, _) => null,
     );
-    if (items == null) {
-      debugPrint('persistCurrentState: no data to persist');
-      return;
-    }
+    if (items == null) return;
 
-    debugPrint('persistCurrentState: persisting ${items.length} items');
     _updateCache(items);
     final steamId = ref.read(steamIdProvider);
     if (steamId.isNotEmpty) {
       _syncToFirestore(steamId, items);
-    } else {
-      debugPrint('persistCurrentState: no steamId, skipping Firestore');
     }
   }
 
   /// Pushes inventory to Firestore in the background.
   /// Fire-and-forget — failures are logged but don't block the UI.
   void _syncToFirestore(String steamId, List<CS2Item> items) async {
-    debugPrint('_syncToFirestore: starting upload for $steamId (${items.length} items)');
     try {
       final firestore = ref.read(firestoreServiceProvider);
       await firestore.saveInventory(steamId, items);
-      debugPrint('_syncToFirestore: SUCCESS — synced ${items.length} items');
     } catch (e) {
-      debugPrint('_syncToFirestore: FAILED — $e');
+      debugPrint('Firestore sync failed: $e');
     }
   }
 
