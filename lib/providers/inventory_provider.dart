@@ -320,12 +320,32 @@ final _storageItemsProvider = Provider<List<CS2Item>>((ref) {
   return units.expand((u) => u.items).toList();
 });
 
+/// Inventory-only Steam Market value.
+final inventorySteamValueProvider = Provider<double>((ref) {
+  final items = ref.watch(mainInventoryProvider);
+  return items.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+});
+
+/// Inventory-only CSFloat value.
+final inventoryCsfloatValueProvider = Provider<double>((ref) {
+  final items = ref.watch(mainInventoryProvider);
+  return items.fold(0.0, (sum, item) {
+    final price = item.csfloatPrice ?? item.currentPrice;
+    return sum + (price * item.quantity);
+  });
+});
+
+/// Inventory-only item count.
+final inventoryItemCountProvider = Provider<int>((ref) {
+  final items = ref.watch(mainInventoryProvider);
+  return items.fold(0, (sum, item) => sum + item.quantity);
+});
+
 /// Total portfolio value across all items (Steam Market prices).
 /// Includes both main inventory and storage units.
 final portfolioValueProvider = Provider<double>((ref) {
-  final inventoryItems = ref.watch(mainInventoryProvider);
+  final invValue = ref.watch(inventorySteamValueProvider);
   final storageItems = ref.watch(_storageItemsProvider);
-  final invValue = inventoryItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
   final storValue = storageItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
   return invValue + storValue;
 });
@@ -333,12 +353,8 @@ final portfolioValueProvider = Provider<double>((ref) {
 /// Total portfolio value using CSFloat prices where available.
 /// Includes both main inventory and storage units.
 final csfloatPortfolioValueProvider = Provider<double>((ref) {
-  final inventoryItems = ref.watch(mainInventoryProvider);
+  final invValue = ref.watch(inventoryCsfloatValueProvider);
   final storageItems = ref.watch(_storageItemsProvider);
-  final invValue = inventoryItems.fold(0.0, (sum, item) {
-    final price = item.csfloatPrice ?? item.currentPrice;
-    return sum + (price * item.quantity);
-  });
   final storValue = storageItems.fold(0.0, (sum, item) {
     final price = item.csfloatPrice ?? item.currentPrice;
     return sum + (price * item.quantity);
@@ -349,9 +365,8 @@ final csfloatPortfolioValueProvider = Provider<double>((ref) {
 /// Total number of items (counting quantities).
 /// Includes both main inventory and storage units.
 final totalItemCountProvider = Provider<int>((ref) {
-  final inventoryItems = ref.watch(mainInventoryProvider);
+  final invCount = ref.watch(inventoryItemCountProvider);
   final storageItems = ref.watch(_storageItemsProvider);
-  final invCount = inventoryItems.fold(0, (sum, item) => sum + item.quantity);
   final storCount = storageItems.fold(0, (sum, item) => sum + item.quantity);
   return invCount + storCount;
 });

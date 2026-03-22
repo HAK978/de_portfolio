@@ -7,7 +7,7 @@ import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
 import '../../widgets/item_card.dart';
-import '../../widgets/portfolio_summary.dart';
+import '../../widgets/portfolio_summary_v2.dart';
 import '../auth/steam_login_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -18,20 +18,17 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  /// Opens the Steam WebView login and saves the result.
   Future<void> _openSteamLogin(BuildContext context, WidgetRef ref) async {
     final result = await Navigator.of(context).push<SteamLoginResult>(
       MaterialPageRoute(builder: (_) => const SteamLoginScreen()),
     );
 
-    if (result == null) return; // User cancelled
+    if (result == null) return;
 
-    // Save Steam ID
     if (result.steamId.isNotEmpty) {
       ref.read(steamIdProvider.notifier).set(result.steamId);
     }
 
-    // Save login cookie for price history
     if (result.steamLoginCookie != null &&
         result.steamLoginCookie!.isNotEmpty) {
       ref.read(steamLoginCookieProvider.notifier).set(result.steamLoginCookie!);
@@ -43,13 +40,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final inventoryAsync = ref.watch(inventoryProvider);
     final steamId = ref.watch(steamIdProvider);
 
-    // Extract loaded items for display (no auto-fetch — use buttons to fetch)
-    final loadedItems = switch (inventoryAsync) {
-      AsyncData<List<CS2Item>>(:final value) => value,
-      _ => <CS2Item>[],
-    };
-
-    // No Steam ID set yet — show prompt
     if (steamId.isEmpty) {
       return Scaffold(
         appBar: AppBar(
@@ -95,10 +85,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
 
-    // Watch progress outside .when() so it triggers rebuilds
     final fetchProgress = ref.watch(inventoryFetchProgressProvider);
 
-    // Show loading/error/data states
     return inventoryAsync.when(
       loading: () => Scaffold(
         appBar: AppBar(
@@ -166,14 +154,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildDashboard(BuildContext context, WidgetRef ref, List<CS2Item> items) {
-    final totalValue = ref.watch(portfolioValueProvider);
-    final csfloatValue = ref.watch(csfloatPortfolioValueProvider);
+    final totalSteam = ref.watch(portfolioValueProvider);
+    final totalCsfloat = ref.watch(csfloatPortfolioValueProvider);
     final totalItems = ref.watch(totalItemCountProvider);
+    final invSteam = ref.watch(inventorySteamValueProvider);
+    final invCsfloat = ref.watch(inventoryCsfloatValueProvider);
+    final invCount = ref.watch(inventoryItemCountProvider);
     final storageUnits = ref.watch(storageUnitsProvider);
     final topGainers = ref.watch(topGainersProvider);
     final topLosers = ref.watch(topLosersProvider);
     final priceFetch = ref.watch(priceFetchProvider);
     final csfloatFetch = ref.watch(csfloatFetchProvider);
+
+    final sources = <PortfolioSource>[
+      PortfolioSource(
+        label: 'Inventory',
+        icon: Icons.inventory_2_outlined,
+        steamValue: invSteam,
+        csfloatValue: invCsfloat,
+        itemCount: invCount,
+      ),
+      ...storageUnits.map((unit) {
+        final unitSteam = unit.items.fold(
+            0.0, (sum, i) => sum + (i.currentPrice * i.quantity));
+        final unitCsfloat = unit.items.fold(0.0, (sum, i) {
+          final price = i.csfloatPrice ?? i.currentPrice;
+          return sum + (price * i.quantity);
+        });
+        final unitCount = unit.items.fold(0, (sum, i) => sum + i.quantity);
+        return PortfolioSource(
+          label: unit.name,
+          icon: Icons.storage_outlined,
+          steamValue: unitSteam,
+          csfloatValue: unitCsfloat,
+          itemCount: unitCount,
+        );
+      }),
+    ];
 
     return Scaffold(
       appBar: AppBar(
@@ -181,89 +198,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           'CS2 Portfolio',
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => ref.read(inventoryProvider.notifier).refresh(),
-          ),
-        ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () => ref.read(inventoryProvider.notifier).refresh(),
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            PortfolioSummary(
-              totalValue: totalValue,
-              csfloatValue: csfloatValue,
-              totalItems: totalItems,
-              storageUnitCount: storageUnits.length,
-            ),
-            const SizedBox(height: 16),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          PortfolioSummaryV2(
+            totalSteamValue: totalSteam,
+            totalCsfloatValue: totalCsfloat,
+            totalItems: totalItems,
+            sources: sources,
+          ),
+          const SizedBox(height: 16),
 
-            // Price fetch cards — Steam Market + CSFloat
-            _PriceFetchCard(
-              priceFetch: priceFetch,
-              itemCount: items.length,
-              label: 'Steam Market',
-              icon: Icons.attach_money,
-              onFetch: () => ref.read(priceFetchProvider.notifier).fetchPrices(),
-              onCancel: () => ref.read(priceFetchProvider.notifier).cancel(),
+          // Price fetch cards — Steam Market + CSFloat (inventory only)
+          _PriceFetchCard(
+            priceFetch: priceFetch,
+            itemCount: items.length,
+            label: 'Steam Market',
+            icon: Icons.attach_money,
+            onFetch: () => ref.read(priceFetchProvider.notifier).fetchPrices(),
+            onCancel: () => ref.read(priceFetchProvider.notifier).cancel(),
+          ),
+          const SizedBox(height: 8),
+          _PriceFetchCard(
+            priceFetch: csfloatFetch,
+            itemCount: items.length,
+            label: 'CSFloat',
+            icon: Icons.storefront,
+            iconColor: Colors.blueAccent,
+            onFetch: () => ref.read(csfloatFetchProvider.notifier).fetchPrices(),
+            onCancel: () => ref.read(csfloatFetchProvider.notifier).cancel(),
+          ),
+          const SizedBox(height: 24),
+
+          if (topGainers.isNotEmpty) ...[
+            _SectionHeader(
+              title: 'Top Gainers (24h)',
+              icon: Icons.trending_up,
+              iconColor: Colors.greenAccent,
             ),
             const SizedBox(height: 8),
-            _PriceFetchCard(
-              priceFetch: csfloatFetch,
-              itemCount: items.length,
-              label: 'CSFloat',
-              icon: Icons.storefront,
-              iconColor: Colors.blueAccent,
-              onFetch: () => ref.read(csfloatFetchProvider.notifier).fetchPrices(),
-              onCancel: () => ref.read(csfloatFetchProvider.notifier).cancel(),
+            ...topGainers.map(
+              (item) => ItemCard(
+                item: item,
+                onTap: () => context.go('/inventory/${item.id}'),
+              ),
             ),
             const SizedBox(height: 24),
-
-            if (topGainers.isNotEmpty) ...[
-              _SectionHeader(
-                title: 'Top Gainers (24h)',
-                icon: Icons.trending_up,
-                iconColor: Colors.greenAccent,
-              ),
-              const SizedBox(height: 8),
-              ...topGainers.map(
-                (item) => ItemCard(
-                  item: item,
-                  onTap: () => context.go('/inventory/${item.id}'),
-                ),
-              ),
-              const SizedBox(height: 24),
-            ],
-
-            if (topLosers.isNotEmpty) ...[
-              _SectionHeader(
-                title: 'Top Losers (24h)',
-                icon: Icons.trending_down,
-                iconColor: Colors.redAccent,
-              ),
-              const SizedBox(height: 8),
-              ...topLosers.map(
-                (item) => ItemCard(
-                  item: item,
-                  onTap: () => context.go('/inventory/${item.id}'),
-                ),
-              ),
-            ],
           ],
-        ),
+
+          if (topLosers.isNotEmpty) ...[
+            _SectionHeader(
+              title: 'Top Losers (24h)',
+              icon: Icons.trending_down,
+              iconColor: Colors.redAccent,
+            ),
+            const SizedBox(height: 8),
+            ...topLosers.map(
+              (item) => ItemCard(
+                item: item,
+                onTap: () => context.go('/inventory/${item.id}'),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
 }
 
-/// Card that shows price fetch status: a button to start, progress
-/// bar while fetching, or completion status.
-///
-/// Reused for both Steam Market and CSFloat — just pass different
-/// labels, icons, and callbacks.
 class _PriceFetchCard extends StatelessWidget {
   final PriceFetchState priceFetch;
   final int itemCount;

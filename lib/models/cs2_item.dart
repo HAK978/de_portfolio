@@ -21,6 +21,7 @@ class CS2Item {
   final String location; // "inventory", "Storage Unit 1", etc.
   final String imageUrl;
   final String marketHashName; // Steam market identifier
+  final String? collection; // e.g. "The Bravo Collection" (from Steam tag "ItemSet")
 
   const CS2Item({
     required this.id,
@@ -41,6 +42,7 @@ class CS2Item {
     this.location = 'inventory',
     required this.imageUrl,
     required this.marketHashName,
+    this.collection,
   });
 
   /// Creates a copy of this item with the given fields replaced.
@@ -67,6 +69,7 @@ class CS2Item {
     String? location,
     String? imageUrl,
     String? marketHashName,
+    String? collection,
   }) {
     return CS2Item(
       id: id ?? this.id,
@@ -87,6 +90,7 @@ class CS2Item {
       location: location ?? this.location,
       imageUrl: imageUrl ?? this.imageUrl,
       marketHashName: marketHashName ?? this.marketHashName,
+      collection: collection ?? this.collection,
     );
   }
 
@@ -110,6 +114,7 @@ class CS2Item {
     'location': location,
     'imageUrl': imageUrl,
     'marketHashName': marketHashName,
+    'collection': collection,
   };
 
   /// Creates a CS2Item from a JSON map (loaded from cache).
@@ -132,6 +137,7 @@ class CS2Item {
     location: json['location'] as String? ?? 'inventory',
     imageUrl: json['imageUrl'] as String,
     marketHashName: json['marketHashName'] as String,
+    collection: json['collection'] as String?,
   );
 
   /// Full display name including StatTrak/Souvenir prefix and wear.

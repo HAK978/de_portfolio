@@ -90,9 +90,74 @@ final storageProvider = NotifierProvider<StorageNotifier, StorageState>(
 
 class StorageNotifier extends Notifier<StorageState> {
   static const _cachePrefix = 'storage_cache_';
+  static const _unitsIndexFile = 'storage_units_index.json';
 
   @override
-  StorageState build() => const StorageState();
+  StorageState build() {
+    // Fire off async cache load — state starts empty, updates when cache loads
+    _loadCachedUnits();
+    return const StorageState();
+  }
+
+  /// Loads cached unit index + each unit's cached items from disk.
+  /// Called automatically on build() so portfolio values are available on startup.
+  Future<void> _loadCachedUnits() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final indexFile = File('${dir.path}/$_unitsIndexFile');
+      if (!indexFile.existsSync()) return;
+
+      final content = await indexFile.readAsString();
+      final data = jsonDecode(content) as Map<String, dynamic>;
+      final unitsList = data['units'] as List<dynamic>;
+
+      final units = <StorageUnit>[];
+      for (final unitJson in unitsList) {
+        final id = unitJson['id'] as String;
+        final name = unitJson['name'] as String;
+        final itemCount = unitJson['itemCount'] as int;
+
+        // Load cached items for this unit
+        final cached = await _loadCache(id);
+        final items = cached.values.toList();
+        final totalValue = items.fold(
+            0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+
+        units.add(StorageUnit(
+          id: id,
+          name: name,
+          itemCount: itemCount,
+          totalValue: totalValue,
+          items: items,
+        ));
+      }
+
+      if (units.isNotEmpty) {
+        state = state.copyWith(units: units);
+      }
+    } catch (e) {
+      debugPrint('Failed to load cached storage units: $e');
+    }
+  }
+
+  /// Saves the units index (id, name, itemCount) to disk.
+  Future<void> _saveUnitsIndex() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_unitsIndexFile');
+      final data = {
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'units': state.units.map((u) => {
+          'id': u.id,
+          'name': u.name,
+          'itemCount': u.itemCount,
+        }).toList(),
+      };
+      await file.writeAsString(jsonEncode(data));
+    } catch (e) {
+      debugPrint('Failed to save storage units index: $e');
+    }
+  }
 
   /// Fetch the list of storage units from the GC service.
   Future<void> fetchCaskets() async {
@@ -119,6 +184,7 @@ class StorageNotifier extends Notifier<StorageState> {
       }).toList();
 
       state = state.copyWith(isLoading: false, units: units);
+      await _saveUnitsIndex();
     } catch (e) {
       debugPrint('Failed to fetch caskets: $e');
       state = state.copyWith(isLoading: false, error: e.toString());

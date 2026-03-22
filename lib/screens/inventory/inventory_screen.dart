@@ -54,6 +54,37 @@ class WeaponTypeFilterNotifier extends Notifier<String?> {
   void set(String? value) => state = value;
 }
 
+final wearFilterProvider = NotifierProvider<WearFilterNotifier, String?>(
+  WearFilterNotifier.new,
+);
+
+class WearFilterNotifier extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void set(String? value) => state = value;
+}
+
+final collectionFilterProvider = NotifierProvider<CollectionFilterNotifier, String?>(
+  CollectionFilterNotifier.new,
+);
+
+class CollectionFilterNotifier extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void set(String? value) => state = value;
+}
+
+/// Dynamically computed list of collections present in the user's inventory.
+final availableCollectionsProvider = Provider<List<String>>((ref) {
+  final items = ref.watch(mainInventoryProvider);
+  final collections = <String>{};
+  for (final item in items) {
+    if (item.collection != null) collections.add(item.collection!);
+  }
+  final sorted = collections.toList()..sort();
+  return sorted;
+});
+
 /// Price range filter — stores (min, max) as a record.
 /// null means no price filter is active.
 final priceRangeFilterProvider =
@@ -103,6 +134,8 @@ final filteredInventoryProvider = Provider<List<CS2Item>>((ref) {
   final sort = ref.watch(sortOptionProvider);
   final rarityFilter = ref.watch(rarityFilterProvider);
   final weaponTypeFilter = ref.watch(weaponTypeFilterProvider);
+  final wearFilter = ref.watch(wearFilterProvider);
+  final collectionFilter = ref.watch(collectionFilterProvider);
   final priceRange = ref.watch(priceRangeFilterProvider);
 
   var filtered = items.where((item) {
@@ -113,6 +146,12 @@ final filteredInventoryProvider = Provider<List<CS2Item>>((ref) {
       return false;
     }
     if (weaponTypeFilter != null && item.weaponType != weaponTypeFilter) {
+      return false;
+    }
+    if (wearFilter != null && item.wear != wearFilter) {
+      return false;
+    }
+    if (collectionFilter != null && item.collection != collectionFilter) {
       return false;
     }
     if (priceRange != null &&
@@ -182,12 +221,12 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
     super.dispose();
   }
 
-  bool _hasActiveFilters(
-    String? rarity,
-    String? weaponType,
-    ({double min, double max})? priceRange,
-  ) {
-    return rarity != null || weaponType != null || priceRange != null;
+  bool _hasActiveFilters() {
+    return ref.read(rarityFilterProvider) != null ||
+        ref.read(weaponTypeFilterProvider) != null ||
+        ref.read(wearFilterProvider) != null ||
+        ref.read(collectionFilterProvider) != null ||
+        ref.read(priceRangeFilterProvider) != null;
   }
 
   void _showFilterSheet(BuildContext context, WidgetRef ref) {
@@ -220,9 +259,12 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
     final items = ref.watch(filteredInventoryProvider);
     final allItems = ref.watch(mainInventoryProvider);
     final currentSort = ref.watch(sortOptionProvider);
-    final currentRarity = ref.watch(rarityFilterProvider);
-    final currentWeaponType = ref.watch(weaponTypeFilterProvider);
-    final currentPriceRange = ref.watch(priceRangeFilterProvider);
+    // Watch filters to trigger rebuild for badge
+    ref.watch(rarityFilterProvider);
+    ref.watch(weaponTypeFilterProvider);
+    ref.watch(wearFilterProvider);
+    ref.watch(collectionFilterProvider);
+    ref.watch(priceRangeFilterProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -234,11 +276,7 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
           // Filter button — opens bottom sheet
           IconButton(
             icon: Badge(
-              isLabelVisible: _hasActiveFilters(
-                currentRarity,
-                currentWeaponType,
-                currentPriceRange,
-              ),
+              isLabelVisible: _hasActiveFilters(),
               smallSize: 8,
               child: const Icon(Icons.filter_list),
             ),
@@ -344,15 +382,17 @@ class _FilterSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final currentRarity = ref.watch(rarityFilterProvider);
     final currentWeaponType = ref.watch(weaponTypeFilterProvider);
+    final currentWear = ref.watch(wearFilterProvider);
+    final currentCollection = ref.watch(collectionFilterProvider);
     final currentPriceRange = ref.watch(priceRangeFilterProvider);
+    final collections = ref.watch(availableCollectionsProvider);
 
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Drag handle
           Center(
             child: Container(
               width: 40,
@@ -365,7 +405,6 @@ class _FilterSheet extends ConsumerWidget {
             ),
           ),
 
-          // Header with clear button
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -377,6 +416,8 @@ class _FilterSheet extends ConsumerWidget {
                 onPressed: () {
                   ref.read(rarityFilterProvider.notifier).set(null);
                   ref.read(weaponTypeFilterProvider.notifier).set(null);
+                  ref.read(wearFilterProvider.notifier).set(null);
+                  ref.read(collectionFilterProvider.notifier).set(null);
                   ref.read(priceRangeFilterProvider.notifier).set(null);
                 },
                 child: const Text('Clear All'),
@@ -385,7 +426,6 @@ class _FilterSheet extends ConsumerWidget {
           ),
           const SizedBox(height: 16),
 
-          // Rarity dropdown
           _FilterDropdown<String?>(
             label: 'Rarity',
             value: currentRarity,
@@ -417,7 +457,6 @@ class _FilterSheet extends ConsumerWidget {
           ),
           const SizedBox(height: 12),
 
-          // Weapon type dropdown
           _FilterDropdown<String?>(
             label: 'Weapon Type',
             value: currentWeaponType,
@@ -433,7 +472,35 @@ class _FilterSheet extends ConsumerWidget {
           ),
           const SizedBox(height: 12),
 
-          // Price range dropdown
+          _FilterDropdown<String?>(
+            label: 'Wear',
+            value: currentWear,
+            items: [
+              const DropdownMenuItem(value: null, child: Text('All Wears')),
+              ...['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred']
+                  .map((w) => DropdownMenuItem(value: w, child: Text(w))),
+            ],
+            onChanged: (value) {
+              ref.read(wearFilterProvider.notifier).set(value);
+            },
+          ),
+          const SizedBox(height: 12),
+
+          if (collections.isNotEmpty) ...[
+            _FilterDropdown<String?>(
+              label: 'Collection',
+              value: currentCollection,
+              items: [
+                const DropdownMenuItem(value: null, child: Text('All Collections')),
+                ...collections.map((c) => DropdownMenuItem(value: c, child: Text(c))),
+              ],
+              onChanged: (value) {
+                ref.read(collectionFilterProvider.notifier).set(value);
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+
           _FilterDropdown<PriceRange?>(
             label: 'Price Range',
             value: _currentPriceRangeEnum(currentPriceRange),

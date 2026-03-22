@@ -170,6 +170,7 @@ class SteamApiService {
     final rarityColor = _getTagColor(tags, 'Rarity') ?? 'b0c3d9';
     final wear = _getTagValue(tags, 'Exterior');
     final quality = _getTagValue(tags, 'Quality') ?? 'Normal';
+    final collection = _getTagValue(tags, 'ItemSet');
 
     final name = desc['name'] as String? ?? 'Unknown';
     final marketHashName = desc['market_hash_name'] as String? ?? name;
@@ -193,6 +194,7 @@ class SteamApiService {
       location: 'inventory',
       imageUrl: '$_imageBase$iconUrl',
       marketHashName: marketHashName,
+      collection: collection,
     );
   }
 
