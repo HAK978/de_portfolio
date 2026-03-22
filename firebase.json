@@ -1,1 +1,31 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"cs2-portfolio","appId":"1:510847139272:android:ec820e0b2b2756ed18d4fd","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"cs2-portfolio","configurations":{"android":"1:510847139272:android:ec820e0b2b2756ed18d4fd","ios":"1:510847139272:ios:e8503adfaecf45be18d4fd"}}}}}}
+{
+  "functions": {
+    "source": "functions",
+    "codebase": "default",
+    "ignore": ["node_modules", ".git"],
+    "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"]
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "cs2-portfolio",
+          "appId": "1:510847139272:android:ec820e0b2b2756ed18d4fd",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "cs2-portfolio",
+          "configurations": {
+            "android": "1:510847139272:android:ec820e0b2b2756ed18d4fd",
+            "ios": "1:510847139272:ios:e8503adfaecf45be18d4fd"
+          }
+        }
+      }
+    }
+  }
+}

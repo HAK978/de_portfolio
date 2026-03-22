@@ -273,6 +273,8 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [
+          // Fetch inventory from Steam
+          _FetchInventoryButton(),
           // Filter button — opens bottom sheet
           IconButton(
             icon: Badge(
@@ -366,6 +368,36 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Button that fetches inventory from Steam, showing progress while active.
+class _FetchInventoryButton extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fetchProgress = ref.watch(inventoryFetchProgressProvider);
+
+    if (fetchProgress.isFetching) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+        ),
+      );
+    }
+
+    return IconButton(
+      icon: const Icon(Icons.refresh),
+      tooltip: 'Fetch inventory from Steam',
+      onPressed: () {
+        ref.read(inventoryProvider.notifier).refresh();
+      },
     );
   }
 }

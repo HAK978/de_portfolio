@@ -1,7 +1,7 @@
 import 'dart:convert';
-import 'dart:developer' as dev;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
@@ -47,37 +47,53 @@ class CsfloatService {
       final response = await http.get(uri, headers: headers);
 
       if (response.statusCode == 429) {
-        dev.log('CSFloat rate limited for: $marketHashName');
+        debugPrint('CSF 429 RATE LIMITED: $marketHashName — retrying in 5s');
+        await Future.delayed(const Duration(seconds: 5));
+        final retry = await http.get(uri, headers: headers);
+        if (retry.statusCode == 200) {
+          final price = _parsePriceFromResponse(retry.body);
+          debugPrint('CSF RETRY ${price != null ? "OK \$${price.toStringAsFixed(2)}" : "NO LISTING"}: $marketHashName');
+          return price;
+        }
+        debugPrint('CSF RETRY FAILED (${retry.statusCode}): $marketHashName');
         return null;
       }
 
       if (response.statusCode != 200) {
-        dev.log('CSFloat fetch failed (${response.statusCode}) for: $marketHashName');
+        debugPrint('CSF ERROR ${response.statusCode}: $marketHashName');
         return null;
       }
 
-      final data = jsonDecode(response.body);
-
-      // Response is {"data": [...]} with auth
-      List<dynamic>? listings;
-      if (data is List) {
-        listings = data;
-      } else if (data is Map<String, dynamic>) {
-        listings = data['data'] as List<dynamic>?;
+      final price = _parsePriceFromResponse(response.body);
+      if (price == null) {
+        debugPrint('CSF NO LISTING: $marketHashName');
       }
-
-      if (listings == null || listings.isEmpty) return null;
-
-      final listing = listings[0] as Map<String, dynamic>;
-      final priceInCents = listing['price'] as int?;
-
-      if (priceInCents == null) return null;
-
-      return priceInCents / 100.0;
+      return price;
     } catch (e) {
-      dev.log('Error fetching CSFloat price for $marketHashName: $e');
+      debugPrint('CSF EXCEPTION: $marketHashName — $e');
       return null;
     }
+  }
+
+  /// Parses a CSFloat API response body to extract the lowest listing price.
+  double? _parsePriceFromResponse(String body) {
+    final data = jsonDecode(body);
+
+    List<dynamic>? listings;
+    if (data is List) {
+      listings = data;
+    } else if (data is Map<String, dynamic>) {
+      listings = data['data'] as List<dynamic>?;
+    }
+
+    if (listings == null || listings.isEmpty) return null;
+
+    final listing = listings[0] as Map<String, dynamic>;
+    final priceInCents = listing['price'] as int?;
+
+    if (priceInCents == null) return null;
+
+    return priceInCents / 100.0;
   }
 
   /// Fetches CSFloat prices for a list of items, yielding progress.
@@ -85,6 +101,10 @@ class CsfloatService {
   /// Reuses the same PriceFetchProgress class from price_service.dart
   /// so the UI can show the same progress pattern.
   Stream<PriceFetchProgress> fetchPrices(List<String> marketHashNames) async* {
+    debugPrint('═══ CSFloat fetch start ═══');
+    debugPrint('CSF API key: ${apiKey != null ? "YES (${apiKey!.substring(0, 8)}...)" : "NO KEY"}');
+    debugPrint('CSF items requested: ${marketHashNames.length}');
+
     final prices = <String, double>{};
 
     // Load cached prices first
@@ -95,24 +115,31 @@ class CsfloatService {
         .where((name) => !cached.containsKey(name))
         .toList();
 
-    dev.log('CSFloat: ${cached.length} cached, ${toFetch.length} to fetch');
+    // Only count cached items that are in the current request
+    int fetchedCount = marketHashNames.length - toFetch.length;
 
-    if (cached.isNotEmpty) {
+    debugPrint('CSF cache hits: $fetchedCount/${marketHashNames.length}, to fetch: ${toFetch.length}');
+
+    if (fetchedCount > 0) {
       yield PriceFetchProgress(
-        fetched: cached.length,
+        fetched: fetchedCount,
         total: marketHashNames.length,
-        currentItem: 'Loaded ${cached.length} cached CSFloat prices',
+        currentItem: 'Loaded $fetchedCount cached CSFloat prices',
         prices: Map.of(prices),
       );
     }
 
-    int fetchedCount = cached.length;
+    int newPriced = 0;
+    int noListing = 0;
 
     for (final name in toFetch) {
       final price = await fetchPrice(name);
 
       if (price != null) {
         prices[name] = price;
+        newPriced++;
+      } else {
+        noListing++;
       }
 
       fetchedCount++;
@@ -128,6 +155,12 @@ class CsfloatService {
         await Future.delayed(_delayBetweenRequests);
       }
     }
+
+    // Count how many of the requested items actually have prices
+    final totalPriced = marketHashNames.where((n) => prices.containsKey(n)).length;
+    debugPrint('═══ CSFloat fetch done ═══');
+    debugPrint('CSF results: $totalPriced/${marketHashNames.length} items have prices');
+    debugPrint('CSF this run: $newPriced new prices, $noListing no listing');
 
     await _savePriceCache(prices);
   }
@@ -145,7 +178,7 @@ class CsfloatService {
       final timestamp = data['timestamp'] as int? ?? 0;
       final cacheTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
       if (DateTime.now().difference(cacheTime) > _cacheMaxAge) {
-        dev.log('CSFloat price cache expired');
+        debugPrint('CSFloat price cache expired');
         return {};
       }
 
@@ -153,10 +186,10 @@ class CsfloatService {
               ?.map((key, value) => MapEntry(key, (value as num).toDouble())) ??
           {};
 
-      dev.log('Loaded ${prices.length} CSFloat prices from cache');
+      debugPrint('Loaded ${prices.length} CSFloat prices from cache');
       return prices;
     } catch (e) {
-      dev.log('Error loading CSFloat price cache: $e');
+      debugPrint('Error loading CSFloat price cache: $e');
       return {};
     }
   }
@@ -172,9 +205,9 @@ class CsfloatService {
       };
 
       await file.writeAsString(jsonEncode(data));
-      dev.log('Saved ${prices.length} CSFloat prices to cache');
+      debugPrint('Saved ${prices.length} CSFloat prices to cache');
     } catch (e) {
-      dev.log('Error saving CSFloat price cache: $e');
+      debugPrint('Error saving CSFloat price cache: $e');
     }
   }
 }

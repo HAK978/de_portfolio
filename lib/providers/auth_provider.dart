@@ -1,6 +1,6 @@
-import 'dart:developer' as dev;
-
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/firestore_service.dart';
@@ -10,24 +10,14 @@ final firestoreServiceProvider = Provider<FirestoreService>((ref) {
   return FirestoreService();
 });
 
-/// Auth state — tracks whether user is logged in.
-///
-/// For now this is a simple wrapper around Firebase Auth state.
-/// When we add Steam OpenID login, this will handle the full flow:
-/// 1. Open Steam login in WebView
-/// 2. Get SteamID64 from redirect
-/// 3. Exchange for Firebase custom token (via Cloud Function)
-/// 4. Sign in to Firebase with that token
-///
-/// Until the Firebase project is set up, the app continues to work
-/// with just the local Steam ID (from settings). This provider
-/// adds the cloud persistence layer on top.
+/// Auth state — tracks whether user is logged in via Firebase.
 class AuthState {
   final bool isLoggedIn;
   final String? steamId;
   final String? displayName;
   final String? avatarUrl;
   final bool isLoading;
+  final String? error;
 
   const AuthState({
     this.isLoggedIn = false,
@@ -35,6 +25,7 @@ class AuthState {
     this.displayName,
     this.avatarUrl,
     this.isLoading = false,
+    this.error,
   });
 
   AuthState copyWith({
@@ -43,6 +34,7 @@ class AuthState {
     String? displayName,
     String? avatarUrl,
     bool? isLoading,
+    String? error,
   }) {
     return AuthState(
       isLoggedIn: isLoggedIn ?? this.isLoggedIn,
@@ -50,6 +42,7 @@ class AuthState {
       displayName: displayName ?? this.displayName,
       avatarUrl: avatarUrl ?? this.avatarUrl,
       isLoading: isLoading ?? this.isLoading,
+      error: error,
     );
   }
 }
@@ -61,7 +54,6 @@ final authProvider = NotifierProvider<AuthNotifier, AuthState>(
 class AuthNotifier extends Notifier<AuthState> {
   @override
   AuthState build() {
-    // Listen to Firebase auth state changes
     _listenToAuthChanges();
     return const AuthState();
   }
@@ -70,35 +62,57 @@ class AuthNotifier extends Notifier<AuthState> {
     try {
       FirebaseAuth.instance.authStateChanges().listen((user) {
         if (user != null) {
-          dev.log('Firebase auth: user signed in (${user.uid})');
+          debugPrint('Firebase auth: signed in as ${user.uid}');
           state = state.copyWith(
             isLoggedIn: true,
             steamId: user.uid,
             displayName: user.displayName,
+            isLoading: false,
           );
         } else {
-          dev.log('Firebase auth: user signed out');
+          debugPrint('Firebase auth: signed out');
           state = const AuthState();
         }
       });
     } catch (e) {
-      // Firebase not initialized yet — that's OK, we work offline
-      dev.log('Firebase auth not available: $e');
+      debugPrint('Firebase auth not available: $e');
     }
   }
 
-  /// Signs in with a Firebase custom token.
+  /// Exchanges a Steam ID for a Firebase auth session.
   ///
-  /// This will be called after the Steam OpenID flow. A Cloud Function
-  /// validates the OpenID response and returns a custom Firebase token.
-  Future<void> signInWithCustomToken(String token) async {
-    state = state.copyWith(isLoading: true);
+  /// Flow:
+  /// 1. Call Cloud Function with Steam ID
+  /// 2. Cloud Function validates + creates custom token
+  /// 3. Sign in to Firebase with that token
+  /// 4. Auth state listener picks up the sign-in
+  Future<void> signInWithSteamId(String steamId) async {
+    state = state.copyWith(isLoading: true, error: null);
+
     try {
+      debugPrint('Requesting Firebase token for Steam ID: $steamId');
+
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'createCustomToken',
+      );
+      final result = await callable.call<Map<String, dynamic>>({
+        'steamId': steamId,
+      });
+
+      final token = result.data['token'] as String?;
+      if (token == null) {
+        throw Exception('No token returned from Cloud Function');
+      }
+
+      debugPrint('Got custom token, signing in...');
       await FirebaseAuth.instance.signInWithCustomToken(token);
-      // Auth state listener will update the state
+      // Auth state listener will update state to isLoggedIn: true
     } catch (e) {
-      dev.log('Sign in failed: $e');
-      state = state.copyWith(isLoading: false);
+      debugPrint('Firebase sign-in failed: $e');
+      state = state.copyWith(
+        isLoading: false,
+        error: e.toString(),
+      );
     }
   }
 
@@ -107,23 +121,7 @@ class AuthNotifier extends Notifier<AuthState> {
     try {
       await FirebaseAuth.instance.signOut();
     } catch (e) {
-      dev.log('Sign out failed: $e');
-    }
-  }
-
-  /// Syncs the current local inventory to Firestore.
-  ///
-  /// This is called after price fetches complete, so the cloud
-  /// always has up-to-date data. Only works when logged in.
-  Future<void> syncInventoryToCloud(String steamId, dynamic items) async {
-    if (!state.isLoggedIn) return;
-
-    try {
-      final firestore = ref.read(firestoreServiceProvider);
-      await firestore.saveUserProfile(steamId: steamId);
-      dev.log('Synced user profile to Firestore');
-    } catch (e) {
-      dev.log('Error syncing to cloud: $e');
+      debugPrint('Sign out failed: $e');
     }
   }
 }

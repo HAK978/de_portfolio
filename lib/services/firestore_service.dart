@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
@@ -101,7 +103,7 @@ class FirestoreService {
 
       final batchNum = i ~/ batchSize + 1;
       try {
-        await batch.commit().timeout(const Duration(seconds: 20));
+        await _commitWithRetry(batch, batchNum);
         written += chunk.length;
         debugPrint('saveInventory: batch $batchNum committed (${chunk.length} items)');
 
@@ -114,6 +116,10 @@ class FirestoreService {
         if (msg.contains('RESOURCE_EXHAUSTED') || msg.contains('Quota exceeded')) {
           debugPrint('saveInventory: QUOTA EXHAUSTED — disabling Firestore writes');
           _quotaExhausted = true;
+          return;
+        }
+        if (msg.contains('PERMISSION_DENIED')) {
+          debugPrint('saveInventory: PERMISSION DENIED — not signed in to Firebase?');
           return;
         }
         debugPrint('saveInventory: batch $batchNum FAILED — $e');
@@ -223,6 +229,19 @@ class FirestoreService {
 
     debugPrint('Loaded ${prices.length} prices from Firestore');
     return prices;
+  }
+
+  // ── Retry Logic ─────────────────────────────────────────
+
+  /// Commits a Firestore batch with one retry on timeout.
+  Future<void> _commitWithRetry(WriteBatch batch, int batchNum) async {
+    try {
+      await batch.commit().timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      debugPrint('saveInventory: batch $batchNum timed out, retrying...');
+      await Future.delayed(const Duration(seconds: 5));
+      await batch.commit().timeout(const Duration(seconds: 30));
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────

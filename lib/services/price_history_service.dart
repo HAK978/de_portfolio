@@ -58,6 +58,33 @@ class PriceHistoryService {
 
   PriceHistoryService({this.steamLoginCookie});
 
+  /// Validates the Steam login cookie by making a test request.
+  /// Returns true if the cookie is accepted, false if expired/invalid.
+  Future<bool> validateCookie() async {
+    if (steamLoginCookie == null || steamLoginCookie!.isEmpty) return false;
+
+    try {
+      // Use a common item for the test request
+      final uri = Uri.parse(_baseUrl).replace(queryParameters: {
+        'appid': '730',
+        'currency': '1',
+        'market_hash_name': 'AK-47 | Redline (Field-Tested)',
+      });
+
+      final response = await http.get(uri, headers: {
+        'Cookie': 'steamLoginSecure=$steamLoginCookie',
+      }).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode != 200) return false;
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return data['success'] == true;
+    } catch (e) {
+      debugPrint('Cookie validation error: $e');
+      return false;
+    }
+  }
+
   /// Fetches the INR→USD exchange rate.
   /// Returns how many INR = 1 USD (e.g. ~83.5).
   /// Caches to disk for 24 hours.
@@ -130,9 +157,11 @@ class PriceHistoryService {
     debugPrint('FETCH_HISTORY cache miss, fetching from Steam...');
 
     if (steamLoginCookie == null || steamLoginCookie!.isEmpty) {
-      dev.log('No Steam login cookie — cannot fetch price history');
+      debugPrint('FETCH_HISTORY FAILED: No Steam login cookie');
       return null;
     }
+
+    debugPrint('FETCH_HISTORY cookie: ${steamLoginCookie!.substring(0, 20)}...');
 
     final uri = Uri.parse(_baseUrl).replace(queryParameters: {
       'appid': '730',
@@ -146,20 +175,20 @@ class PriceHistoryService {
       });
 
       if (response.statusCode != 200) {
-        dev.log('Price history fetch failed (${response.statusCode}) for: $marketHashName');
+        debugPrint('FETCH_HISTORY HTTP ${response.statusCode} for: $marketHashName');
         return null;
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
 
       if (data['success'] != true) {
-        dev.log('Price history API returned success=false for: $marketHashName');
+        debugPrint('FETCH_HISTORY success=false for: $marketHashName');
         return null;
       }
 
       final prices = data['prices'] as List<dynamic>?;
       if (prices == null || prices.isEmpty) {
-        dev.log('No price history data for: $marketHashName');
+        debugPrint('FETCH_HISTORY no data for: $marketHashName');
         return null;
       }
 

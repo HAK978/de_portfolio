@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../models/cs2_item.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
@@ -27,6 +28,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     if (result.steamId.isNotEmpty) {
       ref.read(steamIdProvider.notifier).set(result.steamId);
+      // Sign in to Firebase so Firestore writes are authenticated
+      ref.read(authProvider.notifier).signInWithSteamId(result.steamId);
     }
 
     if (result.steamLoginCookie != null &&

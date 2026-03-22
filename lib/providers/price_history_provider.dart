@@ -64,6 +64,16 @@ final priceHistoryServiceProvider = Provider<PriceHistoryService>((ref) {
   );
 });
 
+/// Validates whether the Steam login cookie is still accepted by Steam.
+/// Re-runs whenever the cookie changes (e.g. after login or load from disk).
+/// Returns null while cookie is empty (not yet loaded), true/false once checked.
+final steamSessionValidProvider = FutureProvider<bool?>((ref) async {
+  final cookie = ref.watch(steamLoginCookieProvider);
+  if (cookie.isEmpty) return null; // not loaded yet or not set
+  final service = ref.read(priceHistoryServiceProvider);
+  return service.validateCookie();
+});
+
 /// Fetches price history for a specific item by market hash name.
 ///
 /// This is a family provider — it creates a separate provider for each
@@ -72,7 +82,7 @@ final priceHistoryServiceProvider = Provider<PriceHistoryService>((ref) {
 final priceHistoryProvider =
     FutureProvider.family<List<PriceHistoryPoint>?, String>(
   (ref, marketHashName) async {
-    final service = ref.read(priceHistoryServiceProvider);
+    final service = ref.watch(priceHistoryServiceProvider);
     return service.fetchHistory(marketHashName);
   },
 );

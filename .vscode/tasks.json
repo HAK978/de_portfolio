@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Storage Service",
+      "type": "shell",
+      "command": "node index.js",
+      "options": {
+        "cwd": "${workspaceFolder}/storage-service"
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "group": "services"
+      }
+    },
+    {
+      "label": "ADB Reverse",
+      "type": "shell",
+      "command": "${env:LOCALAPPDATA}/Android/Sdk/platform-tools/adb.exe reverse tcp:3456 tcp:3456",
+      "isBackground": false,
+      "problemMatcher": [],
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "group": "services"
+      }
+    }
+  ]
+}

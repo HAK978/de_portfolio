@@ -224,7 +224,7 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
   @override
   PriceFetchState build() => const PriceFetchState();
 
-  void fetchPrices() {
+  void fetchPrices() async {
     if (state.isFetching) return;
 
     final items = ref.read(inventoryProvider).when(
@@ -237,8 +237,29 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
       return;
     }
 
+    // Wait for CSFloat API key to load from disk if needed
+    var apiKey = ref.read(csfloatApiKeyProvider);
+    if (apiKey.isEmpty) {
+      state = PriceFetchState(
+        isFetching: true,
+        total: 0,
+        currentItem: 'Waiting for API key...',
+      );
+      // Give async key loading up to 3 seconds
+      for (var i = 0; i < 6; i++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        apiKey = ref.read(csfloatApiKeyProvider);
+        if (apiKey.isNotEmpty) break;
+      }
+      if (apiKey.isEmpty) {
+        state = const PriceFetchState(
+          error: 'CSFloat API key not set — add it in Settings',
+        );
+        return;
+      }
+    }
+
     final uniqueNames = _getMarketableNames(items);
-    dev.log('Starting CSFloat price fetch for ${uniqueNames.length} marketable items');
 
     state = PriceFetchState(
       isFetching: true,
@@ -246,6 +267,7 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
       currentItem: 'Starting...',
     );
 
+    // Re-read service now that key is guaranteed loaded
     final service = ref.read(csfloatServiceProvider);
 
     _subscription = service.fetchPrices(uniqueNames).listen(

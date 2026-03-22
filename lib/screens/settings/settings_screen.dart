@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
@@ -67,6 +68,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (result.steamId.isNotEmpty) {
       _steamIdController.text = result.steamId;
       ref.read(steamIdProvider.notifier).set(result.steamId);
+      // Sign in to Firebase so Firestore writes are authenticated
+      ref.read(authProvider.notifier).signInWithSteamId(result.steamId);
     }
 
     if (result.steamLoginCookie != null &&
@@ -127,9 +130,54 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _buildSteamLoginCard(String steamId, String cookie) {
+  Widget _buildSteamLoginCard(String steamId, String cookie, WidgetRef ref) {
     final isLoggedIn = steamId.isNotEmpty;
     final hasCookie = cookie.isNotEmpty;
+    final sessionValid = ref.watch(steamSessionValidProvider);
+
+    // Determine session status: null = checking, true = valid, false = expired
+    final ({IconData icon, Color color, String text}) sessionStatus;
+    if (!hasCookie) {
+      sessionStatus = (
+        icon: Icons.warning_amber,
+        color: Colors.orangeAccent,
+        text: 'No session cookie — charts unavailable',
+      );
+    } else {
+      sessionStatus = sessionValid.when(
+        loading: () => (
+          icon: Icons.hourglass_top,
+          color: Colors.grey,
+          text: 'Checking Steam session...',
+        ),
+        error: (_, _) => (
+          icon: Icons.warning_amber,
+          color: Colors.orangeAccent,
+          text: 'Could not verify session',
+        ),
+        data: (valid) {
+          if (valid == null) {
+            return (
+              icon: Icons.hourglass_top,
+              color: Colors.grey,
+              text: 'Loading cookie...',
+            );
+          }
+          if (valid) {
+            return (
+              icon: Icons.check_circle,
+              color: Colors.greenAccent[400]!,
+              text: 'Steam session active — charts enabled',
+            );
+          }
+          return (
+            icon: Icons.error_outline,
+            color: Colors.redAccent,
+            text: 'Steam session expired — re-sign in to fix',
+          );
+        },
+      );
+    }
 
     return Card(
       child: Padding(
@@ -158,17 +206,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 6),
               Row(
                 children: [
-                  Icon(
-                    hasCookie ? Icons.check_circle : Icons.warning_amber,
-                    color: hasCookie ? Colors.greenAccent[400] : Colors.orangeAccent,
-                    size: 20,
-                  ),
+                  Icon(sessionStatus.icon, color: sessionStatus.color, size: 20),
                   const SizedBox(width: 8),
-                  Text(
-                    hasCookie ? 'Session cookie saved — charts enabled' : 'No session cookie — charts unavailable',
-                    style: TextStyle(
-                      color: hasCookie ? Colors.greenAccent[100] : Colors.orangeAccent,
-                      fontSize: 13,
+                  Expanded(
+                    child: Text(
+                      sessionStatus.text,
+                      style: TextStyle(color: sessionStatus.color, fontSize: 13),
                     ),
                   ),
                 ],
@@ -191,6 +234,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ref.read(steamLoginCookieProvider.notifier).set('');
                         _steamIdController.clear();
                         _steamCookieController.clear();
+                        // Sign out of Firebase
+                        ref.read(authProvider.notifier).signOut();
                         // Clear WebView cookies so next login starts fresh
                         try {
                           final cookieManager = WebViewCookieManager();
@@ -252,7 +297,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           // Steam login
-          _buildSteamLoginCard(currentId, ref.watch(steamLoginCookieProvider)),
+          _buildSteamLoginCard(currentId, ref.watch(steamLoginCookieProvider), ref),
           const SizedBox(height: 12),
 
           // Steam ID input (manual)
