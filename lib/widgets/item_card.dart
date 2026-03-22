@@ -107,7 +107,7 @@ class ItemCard extends StatelessWidget {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              'CF \$${item.csfloatPrice!.toStringAsFixed(2)}',
+                              '\$${item.csfloatPrice!.toStringAsFixed(2)}',
                               style: TextStyle(
                                 color: Colors.blueAccent[100],
                                 fontSize: 11,

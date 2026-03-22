@@ -9,6 +9,7 @@ import '../models/cs2_item.dart';
 import '../models/storage_unit.dart';
 import '../services/steam_api_service.dart';
 import 'auth_provider.dart'; // for firestoreServiceProvider
+import 'storage_provider.dart';
 
 /// Holds the Steam ID the user wants to view.
 ///
@@ -315,33 +316,52 @@ final mainInventoryProvider = Provider<List<CS2Item>>((ref) {
 });
 
 /// Provides storage units from the storage provider.
-/// Used by the home screen for stats.
+/// Used by the home screen for stats and portfolio values.
 final storageUnitsProvider = Provider<List<StorageUnit>>((ref) {
-  // Import from storage_provider when it's loaded
-  // For now returns empty — storage screen manages its own state
-  return <StorageUnit>[];
+  final storage = ref.watch(storageProvider);
+  return storage.units;
+});
+
+/// All storage items flattened from all units.
+final _storageItemsProvider = Provider<List<CS2Item>>((ref) {
+  final units = ref.watch(storageUnitsProvider);
+  return units.expand((u) => u.items).toList();
 });
 
 /// Total portfolio value across all items (Steam Market prices).
+/// Includes both main inventory and storage units.
 final portfolioValueProvider = Provider<double>((ref) {
-  final items = ref.watch(mainInventoryProvider);
-  return items.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+  final inventoryItems = ref.watch(mainInventoryProvider);
+  final storageItems = ref.watch(_storageItemsProvider);
+  final invValue = inventoryItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+  final storValue = storageItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+  return invValue + storValue;
 });
 
-/// Total portfolio value using CSFloat prices where available,
-/// falling back to Steam Market price for items without CSFloat listings.
+/// Total portfolio value using CSFloat prices where available.
+/// Includes both main inventory and storage units.
 final csfloatPortfolioValueProvider = Provider<double>((ref) {
-  final items = ref.watch(mainInventoryProvider);
-  return items.fold(0.0, (sum, item) {
+  final inventoryItems = ref.watch(mainInventoryProvider);
+  final storageItems = ref.watch(_storageItemsProvider);
+  final invValue = inventoryItems.fold(0.0, (sum, item) {
     final price = item.csfloatPrice ?? item.currentPrice;
     return sum + (price * item.quantity);
   });
+  final storValue = storageItems.fold(0.0, (sum, item) {
+    final price = item.csfloatPrice ?? item.currentPrice;
+    return sum + (price * item.quantity);
+  });
+  return invValue + storValue;
 });
 
 /// Total number of items (counting quantities).
+/// Includes both main inventory and storage units.
 final totalItemCountProvider = Provider<int>((ref) {
-  final items = ref.watch(mainInventoryProvider);
-  return items.fold(0, (sum, item) => sum + item.quantity);
+  final inventoryItems = ref.watch(mainInventoryProvider);
+  final storageItems = ref.watch(_storageItemsProvider);
+  final invCount = inventoryItems.fold(0, (sum, item) => sum + item.quantity);
+  final storCount = storageItems.fold(0, (sum, item) => sum + item.quantity);
+  return invCount + storCount;
 });
 
 /// Top gainers — items with biggest positive 24h price change.

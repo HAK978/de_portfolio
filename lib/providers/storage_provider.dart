@@ -1,14 +1,18 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
 import '../models/storage_unit.dart';
+import '../services/csfloat_service.dart';
 import '../services/price_service.dart';
 import '../services/storage_service.dart';
+import 'price_provider.dart';
 
 /// The base URL for the local storage service.
-/// On Android emulator: 10.0.2.2 maps to host localhost.
-/// On a real phone on the same Wi-Fi: use the PC's local IP.
 final storageServiceUrlProvider = NotifierProvider<StorageServiceUrlNotifier, String>(
   StorageServiceUrlNotifier.new,
 );
@@ -36,8 +40,9 @@ final storageStatusProvider = FutureProvider.autoDispose<StorageStatus>((ref) as
 class PricingProgress {
   final int fetched;
   final int total;
+  final String label; // "Steam" or "CSFloat"
 
-  const PricingProgress({required this.fetched, required this.total});
+  const PricingProgress({required this.fetched, required this.total, this.label = 'Steam'});
 
   double get percent => total > 0 ? fetched / total : 0;
 }
@@ -46,9 +51,9 @@ class PricingProgress {
 class StorageState {
   final bool isLoading;
   final List<StorageUnit> units;
-  final Set<String> loadingCaskets; // casket IDs currently being fetched
-  final Set<String> pricingCaskets; // casket IDs currently being priced
-  final Map<String, PricingProgress> pricingProgress; // casketId → progress
+  final Set<String> loadingCaskets;
+  final Set<String> pricingCaskets;
+  final Map<String, PricingProgress> pricingProgress;
   final String? error;
 
   const StorageState({
@@ -84,6 +89,8 @@ final storageProvider = NotifierProvider<StorageNotifier, StorageState>(
 );
 
 class StorageNotifier extends Notifier<StorageState> {
+  static const _cachePrefix = 'storage_cache_';
+
   @override
   StorageState build() => const StorageState();
 
@@ -120,7 +127,7 @@ class StorageNotifier extends Notifier<StorageState> {
   }
 
   /// Fetch the contents of a specific storage unit.
-  /// Called when the user expands a unit card.
+  /// Loads cached prices/images if available, does NOT auto-fetch prices.
   Future<void> fetchContents(String casketId) async {
     if (state.loadingCaskets.contains(casketId)) return;
 
@@ -135,11 +142,13 @@ class StorageNotifier extends Notifier<StorageState> {
       // Group by marketHashName and sum quantities
       final grouped = _groupItems(items);
 
-      // Calculate total value
-      final totalValue = grouped.fold(0.0,
-          (sum, item) => sum + (item.currentPrice * item.quantity));
+      // Apply cached prices/images if available
+      final cached = await _loadCache(casketId);
+      final withCached = _applyCachedData(grouped, cached);
 
-      // Update the specific unit
+      final totalValue = withCached.fold(
+          0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+
       final updatedUnits = state.units.map((unit) {
         if (unit.id == casketId) {
           return StorageUnit(
@@ -147,7 +156,7 @@ class StorageNotifier extends Notifier<StorageState> {
             name: unit.name,
             itemCount: unit.itemCount,
             totalValue: totalValue,
-            items: grouped,
+            items: withCached,
           );
         }
         return unit;
@@ -155,10 +164,7 @@ class StorageNotifier extends Notifier<StorageState> {
 
       final newLoading = {...state.loadingCaskets}..remove(casketId);
       state = state.copyWith(units: updatedUnits, loadingCaskets: newLoading);
-      debugPrint('Loaded $casketId: ${items.length} raw → ${grouped.length} unique items');
-
-      // Auto-fetch prices + images from Steam Market
-      _fetchMarketData(casketId, grouped);
+      debugPrint('Loaded $casketId: ${items.length} raw → ${grouped.length} unique items (${cached.length} cached)');
     } catch (e) {
       debugPrint('Failed to fetch contents for $casketId: $e');
       final newLoading = {...state.loadingCaskets}..remove(casketId);
@@ -166,13 +172,37 @@ class StorageNotifier extends Notifier<StorageState> {
     }
   }
 
-  /// Fetches prices and image URLs from Steam Market for storage items.
-  /// Updates items progressively as results come in.
+  /// Manually fetch Steam Market prices + images for a storage unit.
+  Future<void> fetchSteamPrices(String casketId) async {
+    final unit = state.units.firstWhere((u) => u.id == casketId);
+    if (unit.items.isEmpty) return;
+    await _fetchMarketData(casketId, unit.items);
+  }
+
+  /// Manually fetch CSFloat prices for a storage unit.
+  Future<void> fetchCsfloatPrices(String casketId) async {
+    final unit = state.units.firstWhere((u) => u.id == casketId);
+    if (unit.items.isEmpty) return;
+    await _fetchCsfloatData(casketId, unit.items);
+  }
+
+  /// Fetch Steam + CSFloat prices in parallel.
+  Future<void> fetchAllPrices(String casketId) async {
+    final unit = state.units.firstWhere((u) => u.id == casketId);
+    if (unit.items.isEmpty) return;
+    await Future.wait([
+      _fetchMarketData(casketId, unit.items),
+      _fetchCsfloatData(casketId, unit.items),
+    ]);
+  }
+
+  /// Fetches prices and image URLs from Steam Market.
   Future<void> _fetchMarketData(String casketId, List<CS2Item> items) async {
-    if (state.pricingCaskets.contains(casketId)) return;
+    final key = '${casketId}_steam';
+    if (state.pricingCaskets.contains(key)) return;
 
     state = state.copyWith(
-      pricingCaskets: {...state.pricingCaskets, casketId},
+      pricingCaskets: {...state.pricingCaskets, key},
     );
 
     final priceService = PriceService();
@@ -182,61 +212,214 @@ class StorageNotifier extends Notifier<StorageState> {
     state = state.copyWith(
       pricingProgress: {
         ...state.pricingProgress,
-        casketId: PricingProgress(fetched: 0, total: total),
+        key: PricingProgress(fetched: 0, total: total, label: 'Steam'),
       },
     );
 
     try {
       await for (final results in priceService.fetchMarketData(marketHashNames)) {
-        // Update items with prices and images
-        final updatedItems = items.map((item) {
-          final result = results[item.marketHashName];
-          if (result == null) return item;
+        // Build a map of updates to merge
+        final steamUpdates = <String, MarketItemResult>{};
+        for (final result in results.entries) {
+          steamUpdates[result.key] = result.value;
+        }
 
+        _mergeItemUpdates(casketId, (item) {
+          final result = steamUpdates[item.marketHashName];
+          if (result == null) return item;
           return item.copyWith(
             currentPrice: result.price,
             imageUrl: result.iconUrl != null
                 ? PriceService.buildImageUrl(result.iconUrl!)
                 : item.imageUrl,
           );
-        }).toList();
-
-        final totalValue = updatedItems.fold(
-            0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
-
-        final updatedUnits = state.units.map((unit) {
-          if (unit.id == casketId) {
-            return StorageUnit(
-              id: unit.id,
-              name: unit.name,
-              itemCount: unit.itemCount,
-              totalValue: totalValue,
-              items: updatedItems,
-            );
-          }
-          return unit;
-        }).toList();
+        }, recalcValue: true);
 
         state = state.copyWith(
-          units: updatedUnits,
           pricingProgress: {
             ...state.pricingProgress,
-            casketId: PricingProgress(fetched: results.length, total: total),
+            key: PricingProgress(fetched: results.length, total: total, label: 'Steam'),
           },
         );
       }
 
-      debugPrint('Finished pricing casket $casketId');
+      // Save to cache after steam prices complete
+      final finalUnit = state.units.firstWhere((u) => u.id == casketId);
+      await _saveCache(casketId, finalUnit.items);
+      debugPrint('Finished Steam pricing for casket $casketId');
     } catch (e) {
-      debugPrint('Market data fetch failed for $casketId: $e');
+      debugPrint('Steam market data fetch failed for $casketId: $e');
     } finally {
-      final newPricing = {...state.pricingCaskets}..remove(casketId);
-      final newProgress = {...state.pricingProgress}..remove(casketId);
+      final newPricing = {...state.pricingCaskets}..remove(key);
+      final newProgress = {...state.pricingProgress}..remove(key);
       state = state.copyWith(
         pricingCaskets: newPricing,
         pricingProgress: newProgress,
       );
     }
+  }
+
+  /// Fetches CSFloat prices for storage items.
+  Future<void> _fetchCsfloatData(String casketId, List<CS2Item> items) async {
+    final key = '${casketId}_csfloat';
+    if (state.pricingCaskets.contains(key)) return;
+
+    // Wait briefly for API key to load from disk if it hasn't yet
+    var apiKey = ref.read(csfloatApiKeyProvider);
+    if (apiKey.isEmpty) {
+      await Future.delayed(const Duration(seconds: 2));
+      apiKey = ref.read(csfloatApiKeyProvider);
+    }
+    final service = CsfloatService(apiKey: apiKey.isNotEmpty ? apiKey : null);
+    debugPrint('CSFloat: apiKey=${apiKey.isNotEmpty ? "set" : "NOT SET"}');
+
+    state = state.copyWith(
+      pricingCaskets: {...state.pricingCaskets, key},
+    );
+
+    final marketHashNames = items.map((i) => i.marketHashName).toList();
+    final total = marketHashNames.length;
+
+    state = state.copyWith(
+      pricingProgress: {
+        ...state.pricingProgress,
+        key: PricingProgress(fetched: 0, total: total, label: 'CSFloat'),
+      },
+    );
+
+    try {
+      int fetched = 0;
+      debugPrint('CSFloat: starting fetch, apiKey=${apiKey.isNotEmpty ? "set" : "NOT SET"}');
+
+      await for (final progress in service.fetchPrices(marketHashNames)) {
+        fetched = progress.fetched;
+
+        final prices = progress.prices;
+        debugPrint('CSFloat progress: $fetched/$total, prices found: ${prices.length}');
+        _mergeItemUpdates(casketId, (item) {
+          final price = prices[item.marketHashName];
+          if (price == null) return item;
+          return item.copyWith(csfloatPrice: price);
+        });
+
+        state = state.copyWith(
+          pricingProgress: {
+            ...state.pricingProgress,
+            key: PricingProgress(fetched: fetched, total: total, label: 'CSFloat'),
+          },
+        );
+      }
+
+      // Save to cache after CSFloat prices complete
+      final finalUnit = state.units.firstWhere((u) => u.id == casketId);
+      final withCsf = finalUnit.items.where((i) => i.csfloatPrice != null).length;
+      debugPrint('CSFloat done: $withCsf/${finalUnit.items.length} items have csfloatPrice');
+      if (withCsf > 0) {
+        final sample = finalUnit.items.firstWhere((i) => i.csfloatPrice != null);
+        debugPrint('  Sample: ${sample.marketHashName} steam=\$${sample.currentPrice} csf=\$${sample.csfloatPrice}');
+      }
+      await _saveCache(casketId, finalUnit.items);
+      debugPrint('Finished CSFloat pricing for casket $casketId');
+    } catch (e) {
+      debugPrint('CSFloat data fetch failed for $casketId: $e');
+    } finally {
+      final newPricing = {...state.pricingCaskets}..remove(key);
+      final newProgress = {...state.pricingProgress}..remove(key);
+      state = state.copyWith(
+        pricingCaskets: newPricing,
+        pricingProgress: newProgress,
+      );
+    }
+  }
+
+  /// Merges updates into the current state items for a casket.
+  /// Reads the latest items from state so parallel fetches don't overwrite each other.
+  void _mergeItemUpdates(String casketId, CS2Item Function(CS2Item) updater, {bool recalcValue = false}) {
+    final currentUnit = state.units.firstWhere((u) => u.id == casketId);
+    final csfCount = currentUnit.items.where((i) => i.csfloatPrice != null).length;
+    final updatedItems = currentUnit.items.map(updater).toList();
+    final newCsfCount = updatedItems.where((i) => i.csfloatPrice != null).length;
+    if (csfCount != newCsfCount) {
+      debugPrint('WARNING: csfloatPrice count changed in merge: $csfCount → $newCsfCount');
+    }
+
+    final totalValue = recalcValue
+        ? updatedItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity))
+        : currentUnit.totalValue;
+
+    final updatedUnits = state.units.map((unit) {
+      if (unit.id == casketId) {
+        return StorageUnit(
+          id: unit.id,
+          name: unit.name,
+          itemCount: unit.itemCount,
+          totalValue: totalValue,
+          items: updatedItems,
+        );
+      }
+      return unit;
+    }).toList();
+
+    state = state.copyWith(units: updatedUnits);
+  }
+
+  // ── Caching ──
+
+  /// Saves storage items (with prices/images) to disk.
+  Future<void> _saveCache(String casketId, List<CS2Item> items) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_cachePrefix$casketId.json');
+      final data = {
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'items': items.map((i) => i.toJson()).toList(),
+      };
+      await file.writeAsString(jsonEncode(data));
+      debugPrint('Cached ${items.length} items for casket $casketId');
+    } catch (e) {
+      debugPrint('Failed to save storage cache: $e');
+    }
+  }
+
+  /// Loads cached storage items from disk.
+  /// Returns a map of marketHashName → cached CS2Item.
+  Future<Map<String, CS2Item>> _loadCache(String casketId) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_cachePrefix$casketId.json');
+      if (!file.existsSync()) return {};
+
+      final content = await file.readAsString();
+      final data = jsonDecode(content) as Map<String, dynamic>;
+      final itemsList = data['items'] as List<dynamic>;
+
+      final map = <String, CS2Item>{};
+      for (final json in itemsList) {
+        final item = CS2Item.fromJson(json as Map<String, dynamic>);
+        map[item.marketHashName] = item;
+      }
+      debugPrint('Loaded ${map.length} cached items for casket $casketId');
+      return map;
+    } catch (e) {
+      debugPrint('Failed to load storage cache: $e');
+      return {};
+    }
+  }
+
+  /// Applies cached prices/images to freshly fetched items.
+  List<CS2Item> _applyCachedData(List<CS2Item> items, Map<String, CS2Item> cached) {
+    if (cached.isEmpty) return items;
+
+    return items.map((item) {
+      final cachedItem = cached[item.marketHashName];
+      if (cachedItem == null) return item;
+
+      return item.copyWith(
+        currentPrice: cachedItem.currentPrice,
+        csfloatPrice: cachedItem.csfloatPrice,
+        imageUrl: cachedItem.imageUrl.isNotEmpty ? cachedItem.imageUrl : item.imageUrl,
+      );
+    }).toList();
   }
 
   /// Groups items by marketHashName, summing quantities.

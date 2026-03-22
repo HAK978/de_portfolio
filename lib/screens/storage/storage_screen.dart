@@ -42,7 +42,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [
-          // Settings button to change service URL
           IconButton(
             icon: const Icon(Icons.link),
             tooltip: 'Service URL',
@@ -54,7 +53,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
       ),
       body: Column(
         children: [
-          // URL input (collapsible)
           if (_showUrlInput)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -88,7 +86,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
               ),
             ),
 
-          // Connection + fetch controls
           _ConnectionBar(
             serviceUrl: serviceUrl,
             isLoading: storage.isLoading,
@@ -99,7 +96,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
             },
           ),
 
-          // Error message
           if (storage.error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -109,7 +105,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
               ),
             ),
 
-          // Storage unit list
           Expanded(
             child: storage.units.isEmpty && !storage.isLoading
                 ? const Center(
@@ -126,19 +121,30 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                       final unit = storage.units[index];
                       final isLoading =
                           storage.loadingCaskets.contains(unit.id);
-                      final pricingProgress =
-                          storage.pricingProgress[unit.id];
+                      final isPricing =
+                          storage.pricingCaskets.contains('${unit.id}_steam') ||
+                          storage.pricingCaskets.contains('${unit.id}_csfloat');
+                      final steamProgress =
+                          storage.pricingProgress['${unit.id}_steam'];
+                      final csfloatProgress =
+                          storage.pricingProgress['${unit.id}_csfloat'];
                       return _StorageUnitCard(
                         unit: unit,
                         isLoading: isLoading,
-                        pricingProgress: pricingProgress,
+                        isPricing: isPricing,
+                        steamProgress: steamProgress,
+                        csfloatProgress: csfloatProgress,
                         onExpand: () {
-                          // Lazy-load contents on first expand
                           if (unit.items.isEmpty) {
                             ref
                                 .read(storageProvider.notifier)
                                 .fetchContents(unit.id);
                           }
+                        },
+                        onFetchPrices: () {
+                          ref
+                              .read(storageProvider.notifier)
+                              .fetchAllPrices(unit.id);
                         },
                       );
                     },
@@ -150,7 +156,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   }
 }
 
-/// Shows connection status and a connect/refresh button.
 class _ConnectionBar extends ConsumerWidget {
   final String serviceUrl;
   final bool isLoading;
@@ -172,7 +177,6 @@ class _ConnectionBar extends ConsumerWidget {
       padding: const EdgeInsets.all(16),
       child: Row(
         children: [
-          // Status indicator
           statusAsync.when(
             data: (status) => Row(
               mainAxisSize: MainAxisSize.min,
@@ -217,7 +221,6 @@ class _ConnectionBar extends ConsumerWidget {
 
           const Spacer(),
 
-          // Connect / Refresh button
           FilledButton.icon(
             onPressed: isLoading ? null : onConnect,
             icon: isLoading
@@ -238,19 +241,23 @@ class _ConnectionBar extends ConsumerWidget {
   }
 }
 
-/// An expandable card for a storage unit.
-/// Lazy-loads contents when expanded for the first time.
 class _StorageUnitCard extends StatelessWidget {
   final StorageUnit unit;
   final bool isLoading;
-  final PricingProgress? pricingProgress;
+  final bool isPricing;
+  final PricingProgress? steamProgress;
+  final PricingProgress? csfloatProgress;
   final VoidCallback onExpand;
+  final VoidCallback onFetchPrices;
 
   const _StorageUnitCard({
     required this.unit,
     required this.isLoading,
-    this.pricingProgress,
+    required this.isPricing,
+    this.steamProgress,
+    this.csfloatProgress,
     required this.onExpand,
+    required this.onFetchPrices,
   });
 
   @override
@@ -289,36 +296,39 @@ class _StorageUnitCard extends StatelessWidget {
               ),
             )
           else ...[
-            // Pricing progress bar
-            if (pricingProgress != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Fetching prices: ${pricingProgress!.fetched}/${pricingProgress!.total}',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                    ),
-                    const SizedBox(height: 4),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: pricingProgress!.percent,
-                        minHeight: 4,
+            // Pricing progress bars
+            if (steamProgress != null)
+              _ProgressBar(progress: steamProgress!),
+            if (csfloatProgress != null)
+              _ProgressBar(progress: csfloatProgress!),
+
+            // Fetch prices button + item count
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Row(
+                children: [
+                  Text(
+                    '${unit.items.length} unique items',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                  ),
+                  const Spacer(),
+                  if (!isPricing)
+                    TextButton.icon(
+                      onPressed: onFetchPrices,
+                      icon: Icon(
+                        unit.totalValue > 0 ? Icons.refresh : Icons.download,
+                        size: 16,
+                      ),
+                      label: Text(
+                        unit.totalValue > 0 ? 'Refresh Prices' : 'Fetch Prices',
+                        style: const TextStyle(fontSize: 12),
                       ),
                     ),
-                  ],
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Text(
-                '${unit.items.length} unique items',
-                style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                ],
               ),
             ),
-            // Show items in a constrained list to avoid building all at once
+
+            // Items list
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 500),
               child: ListView.builder(
@@ -332,6 +342,36 @@ class _StorageUnitCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ProgressBar extends StatelessWidget {
+  final PricingProgress progress;
+
+  const _ProgressBar({required this.progress});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${progress.label}: ${progress.fetched}/${progress.total}',
+            style: TextStyle(color: Colors.grey[400], fontSize: 12),
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress.percent,
+              minHeight: 4,
+            ),
+          ),
         ],
       ),
     );
