@@ -7,8 +7,25 @@ import '../services/firestore_service.dart';
 
 /// Provides the FirestoreService instance.
 final firestoreServiceProvider = Provider<FirestoreService>((ref) {
-  return FirestoreService();
+  final service = FirestoreService();
+  // Wire sync state changes to the provider
+  service.onSyncStateChanged = (syncState) {
+    ref.read(firestoreSyncProvider.notifier).set(syncState);
+  };
+  return service;
 });
+
+/// Tracks Firestore sync status for the UI.
+final firestoreSyncProvider = NotifierProvider<FirestoreSyncNotifier, SyncState>(
+  FirestoreSyncNotifier.new,
+);
+
+class FirestoreSyncNotifier extends Notifier<SyncState> {
+  @override
+  SyncState build() => const SyncState();
+
+  void set(SyncState s) => state = s;
+}
 
 /// Auth state — tracks whether user is logged in via Firebase.
 class AuthState {

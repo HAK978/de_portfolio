@@ -143,18 +143,20 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       return cached;
     }
 
-    // No local cache — try Firestore
-    try {
-      final firestore = ref.read(firestoreServiceProvider);
-      final cloudItems = await firestore.loadInventory(steamId);
-      if (cloudItems.isNotEmpty) {
-        dev.log('Loaded ${cloudItems.length} items from Firestore');
-        // Save to local cache so next startup is faster
-        await service.saveInventoryCache(steamId, cloudItems);
-        return cloudItems;
+    // No local cache — try Firestore (only if authenticated)
+    final firestore = ref.read(firestoreServiceProvider);
+    if (firestore.isAuthenticated) {
+      try {
+        final cloudItems = await firestore.loadInventory(steamId);
+        if (cloudItems.isNotEmpty) {
+          dev.log('Loaded ${cloudItems.length} items from Firestore');
+          // Save to local cache so next startup is faster
+          await service.saveInventoryCache(steamId, cloudItems);
+          return cloudItems;
+        }
+      } catch (e) {
+        dev.log('Firestore load failed (offline?): $e');
       }
-    } catch (e) {
-      dev.log('Firestore load failed (offline?): $e');
     }
 
     // No cache anywhere — fetch from Steam

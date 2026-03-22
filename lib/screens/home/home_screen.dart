@@ -7,6 +7,7 @@ import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
+import '../../services/firestore_service.dart';
 import '../../widgets/item_card.dart';
 import '../../widgets/portfolio_summary_v2.dart';
 import '../auth/steam_login_screen.dart';
@@ -211,7 +212,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             totalItems: totalItems,
             sources: sources,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
+          const _SyncStatusRow(),
+          const SizedBox(height: 12),
 
           // Price fetch cards — Steam Market + CSFloat (inventory only)
           _PriceFetchCard(
@@ -389,6 +392,53 @@ class _PriceFetchCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SyncStatusRow extends ConsumerWidget {
+  const _SyncStatusRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sync = ref.watch(firestoreSyncProvider);
+    final auth = ref.watch(authProvider);
+
+    final IconData icon;
+    final Color color;
+    final String text;
+
+    if (!auth.isLoggedIn) {
+      icon = Icons.cloud_off;
+      color = Colors.grey;
+      text = 'Cloud sync off — sign in with Steam';
+    } else {
+      switch (sync.status) {
+        case SyncStatus.idle:
+          icon = Icons.cloud_done;
+          color = Colors.grey;
+          text = 'Cloud sync ready';
+        case SyncStatus.syncing:
+          icon = Icons.cloud_upload;
+          color = Colors.blueAccent;
+          text = 'Syncing ${sync.message ?? ''}...';
+        case SyncStatus.success:
+          icon = Icons.cloud_done;
+          color = Colors.greenAccent[400]!;
+          text = sync.message ?? 'Synced';
+        case SyncStatus.error:
+          icon = Icons.cloud_off;
+          color = Colors.redAccent;
+          text = sync.message ?? 'Sync failed';
+      }
+    }
+
+    return Row(
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 6),
+        Text(text, style: TextStyle(color: color, fontSize: 11)),
+      ],
     );
   }
 }

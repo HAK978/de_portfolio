@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/cs2_item.dart';
@@ -17,6 +18,21 @@ import '../models/cs2_item.dart';
 ///   inventories/{steamId}     — inventory metadata
 ///     items/{itemId}          — individual inventory items
 ///   prices/{marketHashName}   — shared price data (not per-user)
+/// Tracks the current Firestore sync state.
+enum SyncStatus { idle, syncing, success, error }
+
+class SyncState {
+  final SyncStatus status;
+  final String? message;
+  final DateTime? lastSyncTime;
+
+  const SyncState({
+    this.status = SyncStatus.idle,
+    this.message,
+    this.lastSyncTime,
+  });
+}
+
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
@@ -28,6 +44,21 @@ class FirestoreService {
   /// Set when we get RESOURCE_EXHAUSTED from Firestore.
   bool _quotaExhausted = false;
 
+  /// Returns true if the user is signed in to Firebase.
+  bool get isAuthenticated => FirebaseAuth.instance.currentUser != null;
+
+  /// Current sync state — UI can read this to show status.
+  SyncState _syncState = const SyncState();
+  SyncState get syncState => _syncState;
+
+  /// Callback for when sync state changes — wired by the provider.
+  void Function(SyncState)? onSyncStateChanged;
+
+  void _setSyncState(SyncState s) {
+    _syncState = s;
+    onSyncStateChanged?.call(s);
+  }
+
   // ── User Profile ──────────────────────────────────────────
 
   /// Creates or updates a user document after login.
@@ -36,7 +67,7 @@ class FirestoreService {
     String? displayName,
     String? avatarUrl,
   }) async {
-    if (_quotaExhausted) return;
+    if (_quotaExhausted || !isAuthenticated) return;
     await _db.collection('users').doc(steamId).set({
       'displayName': displayName ?? '',
       'avatarUrl': avatarUrl ?? '',
@@ -58,8 +89,14 @@ class FirestoreService {
   /// On subsequent syncs, compares each item's prices to last sync
   /// and only writes the diff. This keeps writes low for the free tier.
   Future<void> saveInventory(String steamId, List<CS2Item> items) async {
+    if (!isAuthenticated) {
+      debugPrint('saveInventory: skipping — not authenticated');
+      _setSyncState(const SyncState(status: SyncStatus.error, message: 'Not signed in'));
+      return;
+    }
     if (_quotaExhausted) {
       debugPrint('saveInventory: skipping — quota exhausted');
+      _setSyncState(const SyncState(status: SyncStatus.error, message: 'Quota exhausted'));
       return;
     }
 
@@ -81,6 +118,7 @@ class FirestoreService {
 
     debugPrint('saveInventory: ${changedItems.length}/${items.length} items changed'
         '${isFirstSync ? " (first sync)" : ""}');
+    _setSyncState(SyncState(status: SyncStatus.syncing, message: '${changedItems.length} items'));
 
     final collectionRef = _db
         .collection('inventories')
@@ -116,10 +154,12 @@ class FirestoreService {
         if (msg.contains('RESOURCE_EXHAUSTED') || msg.contains('Quota exceeded')) {
           debugPrint('saveInventory: QUOTA EXHAUSTED — disabling Firestore writes');
           _quotaExhausted = true;
+          _setSyncState(const SyncState(status: SyncStatus.error, message: 'Quota exhausted'));
           return;
         }
         if (msg.contains('PERMISSION_DENIED')) {
           debugPrint('saveInventory: PERMISSION DENIED — not signed in to Firebase?');
+          _setSyncState(const SyncState(status: SyncStatus.error, message: 'Permission denied'));
           return;
         }
         debugPrint('saveInventory: batch $batchNum FAILED — $e');
@@ -134,8 +174,14 @@ class FirestoreService {
           'lastSync': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
         debugPrint('saveInventory: DONE ($written items written)');
+        _setSyncState(SyncState(
+          status: SyncStatus.success,
+          message: '$written items synced',
+          lastSyncTime: DateTime.now(),
+        ));
       } catch (e) {
         debugPrint('saveInventory: lastSync write failed — $e');
+        _setSyncState(SyncState(status: SyncStatus.error, message: e.toString()));
       }
     }
   }
@@ -169,7 +215,7 @@ class FirestoreService {
     required double currentPrice,
     double? csfloatPrice,
   }) async {
-    if (_quotaExhausted) return;
+    if (_quotaExhausted || !isAuthenticated) return;
     await _db.collection('prices').doc(_sanitizeDocId(marketHashName)).set({
       'marketHashName': marketHashName,
       'currentPrice': currentPrice,
@@ -180,6 +226,11 @@ class FirestoreService {
 
   /// Batch-saves prices for multiple items.
   Future<void> savePrices(Map<String, double> prices) async {
+    debugPrint('savePrices: called with ${prices.length} prices, auth=$isAuthenticated, quota=$_quotaExhausted');
+    if (!isAuthenticated) {
+      debugPrint('savePrices: skipping — not authenticated');
+      return;
+    }
     if (_quotaExhausted) return;
 
     const batchSize = 50;
@@ -211,6 +262,45 @@ class FirestoreService {
     }
 
     debugPrint('savePrices: saved ${prices.length} prices');
+  }
+
+  /// Batch-saves CSFloat prices — only updates the csfloatPrice field.
+  Future<void> saveCsfloatPrices(Map<String, double> prices) async {
+    if (!isAuthenticated) {
+      debugPrint('saveCsfloatPrices: skipping — not authenticated');
+      return;
+    }
+    if (_quotaExhausted) return;
+
+    const batchSize = 50;
+    final entries = prices.entries.toList();
+
+    for (int i = 0; i < entries.length; i += batchSize) {
+      final batch = _db.batch();
+      final end = (i + batchSize).clamp(0, entries.length);
+      final chunk = entries.sublist(i, end);
+
+      for (final entry in chunk) {
+        final docRef = _db.collection('prices').doc(_sanitizeDocId(entry.key));
+        batch.set(docRef, {
+          'marketHashName': entry.key,
+          'csfloatPrice': entry.value,
+          'lastUpdated': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+
+      try {
+        await batch.commit().timeout(const Duration(seconds: 20));
+      } catch (e) {
+        if (e.toString().contains('RESOURCE_EXHAUSTED')) {
+          _quotaExhausted = true;
+          return;
+        }
+        debugPrint('saveCsfloatPrices: batch failed — $e');
+      }
+    }
+
+    debugPrint('saveCsfloatPrices: saved ${prices.length} prices');
   }
 
   /// Loads all cached prices from Firestore.
