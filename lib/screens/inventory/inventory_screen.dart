@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../models/cs2_collections.dart';
 import '../../models/cs2_item.dart';
 import '../../providers/inventory_provider.dart';
 import '../../theme/app_theme.dart';
@@ -33,57 +34,74 @@ class SortOptionNotifier extends Notifier<SortOption> {
   void set(SortOption value) => state = value;
 }
 
-final rarityFilterProvider = NotifierProvider<RarityFilterNotifier, String?>(
+final rarityFilterProvider = NotifierProvider<RarityFilterNotifier, Set<String>>(
   RarityFilterNotifier.new,
 );
 
-class RarityFilterNotifier extends Notifier<String?> {
+class RarityFilterNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
+  }
+  void clear() => state = {};
 }
 
 final weaponTypeFilterProvider =
-    NotifierProvider<WeaponTypeFilterNotifier, String?>(
+    NotifierProvider<WeaponTypeFilterNotifier, Set<String>>(
   WeaponTypeFilterNotifier.new,
 );
 
-class WeaponTypeFilterNotifier extends Notifier<String?> {
+class WeaponTypeFilterNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
+  }
+  void clear() => state = {};
 }
 
-final wearFilterProvider = NotifierProvider<WearFilterNotifier, String?>(
+final wearFilterProvider = NotifierProvider<WearFilterNotifier, Set<String>>(
   WearFilterNotifier.new,
 );
 
-class WearFilterNotifier extends Notifier<String?> {
+class WearFilterNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
+  }
+  void clear() => state = {};
 }
 
-final collectionFilterProvider = NotifierProvider<CollectionFilterNotifier, String?>(
+final collectionFilterProvider = NotifierProvider<CollectionFilterNotifier, Set<String>>(
   CollectionFilterNotifier.new,
 );
 
-class CollectionFilterNotifier extends Notifier<String?> {
+class CollectionFilterNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
-}
-
-/// Dynamically computed list of collections present in the user's inventory.
-final availableCollectionsProvider = Provider<List<String>>((ref) {
-  final items = ref.watch(mainInventoryProvider);
-  final collections = <String>{};
-  for (final item in items) {
-    if (item.collection != null) collections.add(item.collection!);
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
   }
-  final sorted = collections.toList()..sort();
-  return sorted;
-});
+  void clear() => state = {};
+}
 
 /// Price range filter — stores (min, max) as a record.
 /// null means no price filter is active.
@@ -142,16 +160,16 @@ final filteredInventoryProvider = Provider<List<CS2Item>>((ref) {
     if (query.isNotEmpty && !item.name.toLowerCase().contains(query)) {
       return false;
     }
-    if (rarityFilter != null && item.rarity != rarityFilter) {
+    if (rarityFilter.isNotEmpty && !rarityFilter.contains(item.rarity)) {
       return false;
     }
-    if (weaponTypeFilter != null && item.weaponType != weaponTypeFilter) {
+    if (weaponTypeFilter.isNotEmpty && !weaponTypeFilter.contains(item.weaponType)) {
       return false;
     }
-    if (wearFilter != null && item.wear != wearFilter) {
+    if (wearFilter.isNotEmpty && !wearFilter.contains(item.wear)) {
       return false;
     }
-    if (collectionFilter != null && item.collection != collectionFilter) {
+    if (collectionFilter.isNotEmpty && !collectionFilter.contains(item.collection)) {
       return false;
     }
     if (priceRange != null &&
@@ -222,10 +240,10 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
   }
 
   bool _hasActiveFilters() {
-    return ref.read(rarityFilterProvider) != null ||
-        ref.read(weaponTypeFilterProvider) != null ||
-        ref.read(wearFilterProvider) != null ||
-        ref.read(collectionFilterProvider) != null ||
+    return ref.read(rarityFilterProvider).isNotEmpty ||
+        ref.read(weaponTypeFilterProvider).isNotEmpty ||
+        ref.read(wearFilterProvider).isNotEmpty ||
+        ref.read(collectionFilterProvider).isNotEmpty ||
         ref.read(priceRangeFilterProvider) != null;
   }
 
@@ -417,7 +435,6 @@ class _FilterSheet extends ConsumerWidget {
     final currentWear = ref.watch(wearFilterProvider);
     final currentCollection = ref.watch(collectionFilterProvider);
     final currentPriceRange = ref.watch(priceRangeFilterProvider);
-    final collections = ref.watch(availableCollectionsProvider);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -446,10 +463,10 @@ class _FilterSheet extends ConsumerWidget {
               ),
               TextButton(
                 onPressed: () {
-                  ref.read(rarityFilterProvider.notifier).set(null);
-                  ref.read(weaponTypeFilterProvider.notifier).set(null);
-                  ref.read(wearFilterProvider.notifier).set(null);
-                  ref.read(collectionFilterProvider.notifier).set(null);
+                  ref.read(rarityFilterProvider.notifier).clear();
+                  ref.read(weaponTypeFilterProvider.notifier).clear();
+                  ref.read(wearFilterProvider.notifier).clear();
+                  ref.read(collectionFilterProvider.notifier).clear();
                   ref.read(priceRangeFilterProvider.notifier).set(null);
                 },
                 child: const Text('Clear All'),
@@ -458,80 +475,92 @@ class _FilterSheet extends ConsumerWidget {
           ),
           const SizedBox(height: 16),
 
-          _FilterDropdown<String?>(
-            label: 'Rarity',
-            value: currentRarity,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('All Rarities')),
-              ...['Extraordinary', 'Covert', 'Classified', 'Restricted', 'Mil-Spec',
-                  'Industrial Grade', 'Consumer Grade']
-                  .map((r) => DropdownMenuItem(
-                        value: r,
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 12,
-                              height: 12,
-                              margin: const EdgeInsets.only(right: 8),
-                              decoration: BoxDecoration(
-                                color: CS2Colors.fromRarity(r),
-                                shape: BoxShape.circle,
-                              ),
+          Text('Rarity', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: ['Extraordinary', 'Covert', 'Classified', 'Restricted', 'Mil-Spec',
+                'Industrial Grade', 'Consumer Grade']
+                .map((r) => FilterChip(
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 10,
+                            height: 10,
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: BoxDecoration(
+                              color: CS2Colors.fromRarity(r),
+                              shape: BoxShape.circle,
                             ),
-                            Text(r),
-                          ],
-                        ),
-                      )),
-            ],
-            onChanged: (value) {
-              ref.read(rarityFilterProvider.notifier).set(value);
-            },
+                          ),
+                          Text(r, style: const TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                      selected: currentRarity.contains(r),
+                      onSelected: (_) => ref.read(rarityFilterProvider.notifier).toggle(r),
+                      visualDensity: VisualDensity.compact,
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 12),
 
-          _FilterDropdown<String?>(
-            label: 'Weapon Type',
-            value: currentWeaponType,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('All Types')),
-              ...['Rifle', 'Pistol', 'SMG', 'Shotgun', 'Machine Gun',
-                  'Knife', 'Gloves', 'Container', 'Sticker', 'Agent', 'Patch']
-                  .map((t) => DropdownMenuItem(value: t, child: Text(t))),
-            ],
-            onChanged: (value) {
-              ref.read(weaponTypeFilterProvider.notifier).set(value);
-            },
+          Text('Weapon Type', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: ['Rifle', 'Pistol', 'SMG', 'Shotgun', 'Machine Gun',
+                'Knife', 'Gloves', 'Container', 'Sticker', 'Agent', 'Patch']
+                .map((t) => FilterChip(
+                      label: Text(t, style: const TextStyle(fontSize: 12)),
+                      selected: currentWeaponType.contains(t),
+                      onSelected: (_) => ref.read(weaponTypeFilterProvider.notifier).toggle(t),
+                      visualDensity: VisualDensity.compact,
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 12),
 
-          _FilterDropdown<String?>(
-            label: 'Wear',
-            value: currentWear,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('All Wears')),
-              ...['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred']
-                  .map((w) => DropdownMenuItem(value: w, child: Text(w))),
-            ],
-            onChanged: (value) {
-              ref.read(wearFilterProvider.notifier).set(value);
-            },
+          Text('Wear', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred']
+                .map((w) => FilterChip(
+                      label: Text(w, style: const TextStyle(fontSize: 12)),
+                      selected: currentWear.contains(w),
+                      onSelected: (_) => ref.read(wearFilterProvider.notifier).toggle(w),
+                      visualDensity: VisualDensity.compact,
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 12),
 
-          if (collections.isNotEmpty) ...[
-            _FilterDropdown<String?>(
-              label: 'Collection',
-              value: currentCollection,
-              items: [
-                const DropdownMenuItem(value: null, child: Text('All Collections')),
-                ...collections.map((c) => DropdownMenuItem(value: c, child: Text(c))),
-              ],
-              onChanged: (value) {
-                ref.read(collectionFilterProvider.notifier).set(value);
-              },
+          Text('Collection', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () => _showCollectionPicker(context, ref),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                currentCollection.isEmpty
+                    ? 'All Collections'
+                    : '${currentCollection.length} selected',
+                style: TextStyle(
+                  color: currentCollection.isEmpty ? Colors.grey[500] : Colors.white,
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
-          ],
+          ),
+          const SizedBox(height: 12),
 
           _FilterDropdown<PriceRange?>(
             label: 'Price Range',
@@ -570,6 +599,95 @@ class _FilterSheet extends ConsumerWidget {
       if (r.min == range.min && r.max == range.max) return r;
     }
     return null;
+  }
+}
+
+void _showCollectionPicker(BuildContext context, WidgetRef ref) {
+  showDialog(
+    context: context,
+    builder: (context) => const _CollectionPickerDialog(),
+  );
+}
+
+class _CollectionPickerDialog extends ConsumerStatefulWidget {
+  const _CollectionPickerDialog();
+
+  @override
+  ConsumerState<_CollectionPickerDialog> createState() =>
+      _CollectionPickerDialogState();
+}
+
+class _CollectionPickerDialogState
+    extends ConsumerState<_CollectionPickerDialog> {
+  String _search = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = ref.watch(collectionFilterProvider);
+    final filtered = allCs2Collections
+        .where((c) => c.toLowerCase().contains(_search.toLowerCase()))
+        .toList();
+
+    return Dialog(
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      child: SizedBox(
+        width: double.maxFinite,
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search collections...',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                onChanged: (v) => setState(() => _search = v),
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: filtered.length,
+                itemBuilder: (context, i) {
+                  final name = filtered[i];
+                  return CheckboxListTile(
+                    title: Text(name, style: const TextStyle(fontSize: 14)),
+                    value: selected.contains(name),
+                    dense: true,
+                    onChanged: (_) {
+                      ref
+                          .read(collectionFilterProvider.notifier)
+                          .toggle(name);
+                    },
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(collectionFilterProvider.notifier).clear(),
+                    child: const Text('Clear'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Done'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

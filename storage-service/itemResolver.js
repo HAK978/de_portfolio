@@ -34,7 +34,10 @@ class ItemResolver {
       console.error('[Items] Failed to load backup data:', e.message);
     }
 
-    // Try to download fresh data
+    // Build collection map from backup data first
+    this._buildCollectionMap();
+
+    // Try to download fresh data (rebuilds collection map on success)
     try {
       await this._downloadTranslations();
       await this._downloadItems();
@@ -73,6 +76,7 @@ class ItemResolver {
       music_kits: {},
       graffiti_tints: {},
       casket_icons: {},
+      item_sets: {},
     };
 
     const extract = (key) => {
@@ -89,6 +93,7 @@ class ItemResolver {
     extract('sticker_kits');
     extract('music_definitions');
     extract('graffiti_tints');
+    extract('item_sets');
 
     if (jsonData['items_game']?.['alternate_icons2']?.['casket_icons']) {
       result['casket_icons'] = jsonData['items_game']['alternate_icons2']['casket_icons'];
@@ -97,6 +102,9 @@ class ItemResolver {
     // Validate
     if (!result.items[1209]) throw new Error('Items data missing key entries');
     this.csgoItems = result;
+
+    // Build reverse lookup: "defName_paintKitName" → collection display name
+    this._buildCollectionMap();
   }
 
   /** Convert raw GC storage items to readable format */
@@ -197,6 +205,9 @@ class ItemResolver {
       ? `${IMAGE_BASE}${imageUrl}`
       : '';
 
+    // Collection lookup
+    const collection = this._getCollection(defData, item.paint_index);
+
     return {
       id: item.id,
       name: name,
@@ -207,6 +218,7 @@ class ItemResolver {
       isStatTrak: isStatTrak,
       isSouvenir: isSouvenir,
       imageUrl: fullImageUrl,
+      collection: collection,
       paintWear: item.paint_wear || null,
       defIndex: item.def_index,
       paintIndex: item.paint_index || null,
@@ -328,6 +340,39 @@ class ItemResolver {
       }
     }
     return null;
+  }
+
+  /** Build reverse map from defName_paintKitName → collection name */
+  _buildCollectionMap() {
+    this._collectionMap = {};
+    const sets = this.csgoItems.item_sets || {};
+
+    for (const [setKey, setData] of Object.entries(sets)) {
+      const collectionName = setData.name
+        ? this._translate(setData.name)
+        : setKey;
+      if (!collectionName || !setData.items) continue;
+
+      for (const itemKey of Object.keys(setData.items)) {
+        // itemKey format: "[paint_kit_name]weapon_def_name"
+        const match = itemKey.match(/^\[([^\]]+)\](.+)$/);
+        if (match) {
+          const paintName = match[1];
+          const defName = match[2];
+          this._collectionMap[`${defName}_${paintName}`] = collectionName;
+        }
+      }
+    }
+
+    console.log(`[Items] Built collection map: ${Object.keys(this._collectionMap).length} entries`);
+  }
+
+  /** Look up collection name for a given def_index + paint_index */
+  _getCollection(defData, paintIndex) {
+    if (!this._collectionMap || paintIndex === undefined) return null;
+    const paintData = this.csgoItems.paint_kits?.[paintIndex];
+    if (!paintData?.name || !defData?.name) return null;
+    return this._collectionMap[`${defData.name}_${paintData.name}`] || null;
   }
 
   /** Extract music_index from item attributes (stored in attribute 166) */

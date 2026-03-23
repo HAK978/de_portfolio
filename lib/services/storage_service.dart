@@ -100,6 +100,7 @@ class StorageService {
       location: 'storage',
       imageUrl: map['imageUrl'] as String? ?? '',
       marketHashName: map['marketHashName'] as String? ?? map['name'] as String? ?? '',
+      collection: map['collection'] as String?,
     );
   }
 

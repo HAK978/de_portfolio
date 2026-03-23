@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../models/cs2_collections.dart';
 import '../../models/cs2_item.dart';
 import '../../models/storage_unit.dart';
 import '../../providers/storage_provider.dart';
@@ -31,24 +32,38 @@ class _StorageSortNotifier extends Notifier<SortOption> {
   void set(SortOption value) => state = value;
 }
 
-final _storageRarityProvider = NotifierProvider<_StorageRarityNotifier, String?>(
+final _storageRarityProvider = NotifierProvider<_StorageRarityNotifier, Set<String>>(
   _StorageRarityNotifier.new,
 );
 
-class _StorageRarityNotifier extends Notifier<String?> {
+class _StorageRarityNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
+  }
+  void clear() => state = {};
 }
 
-final _storageWeaponTypeProvider = NotifierProvider<_StorageWeaponTypeNotifier, String?>(
+final _storageWeaponTypeProvider = NotifierProvider<_StorageWeaponTypeNotifier, Set<String>>(
   _StorageWeaponTypeNotifier.new,
 );
 
-class _StorageWeaponTypeNotifier extends Notifier<String?> {
+class _StorageWeaponTypeNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
+  }
+  void clear() => state = {};
 }
 
 final _storagePriceRangeProvider =
@@ -62,58 +77,59 @@ class _StoragePriceRangeNotifier extends Notifier<({double min, double max})?> {
   void set(({double min, double max})? value) => state = value;
 }
 
-final _storageWearProvider = NotifierProvider<_StorageWearNotifier, String?>(
+final _storageWearProvider = NotifierProvider<_StorageWearNotifier, Set<String>>(
   _StorageWearNotifier.new,
 );
 
-class _StorageWearNotifier extends Notifier<String?> {
+class _StorageWearNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
+    }
+  }
+  void clear() => state = {};
 }
 
-final _storageCollectionProvider = NotifierProvider<_StorageCollectionNotifier, String?>(
+final _storageCollectionProvider = NotifierProvider<_StorageCollectionNotifier, Set<String>>(
   _StorageCollectionNotifier.new,
 );
 
-class _StorageCollectionNotifier extends Notifier<String?> {
+class _StorageCollectionNotifier extends Notifier<Set<String>> {
   @override
-  String? build() => null;
-  void set(String? value) => state = value;
-}
-
-/// Dynamically computed list of collections present in all storage items.
-final _storageAvailableCollectionsProvider = Provider<List<String>>((ref) {
-  final storage = ref.watch(storageProvider);
-  final collections = <String>{};
-  for (final unit in storage.units) {
-    for (final item in unit.items) {
-      if (item.collection != null) collections.add(item.collection!);
+  Set<String> build() => {};
+  void toggle(String value) {
+    if (state.contains(value)) {
+      state = {...state}..remove(value);
+    } else {
+      state = {...state, value};
     }
   }
-  final sorted = collections.toList()..sort();
-  return sorted;
-});
+  void clear() => state = {};
+}
 
 /// Applies search/sort/filter to a list of storage items.
 List<CS2Item> _applyFilters(
   List<CS2Item> items, {
   required String query,
   required SortOption sort,
-  required String? rarity,
-  required String? weaponType,
-  required String? wear,
-  required String? collection,
+  required Set<String> rarity,
+  required Set<String> weaponType,
+  required Set<String> wear,
+  required Set<String> collection,
   required ({double min, double max})? priceRange,
 }) {
   var filtered = items.where((item) {
     if (query.isNotEmpty && !item.name.toLowerCase().contains(query)) {
       return false;
     }
-    if (rarity != null && item.rarity != rarity) return false;
-    if (weaponType != null && item.weaponType != weaponType) return false;
-    if (wear != null && item.wear != wear) return false;
-    if (collection != null && item.collection != collection) return false;
+    if (rarity.isNotEmpty && !rarity.contains(item.rarity)) return false;
+    if (weaponType.isNotEmpty && !weaponType.contains(item.weaponType)) return false;
+    if (wear.isNotEmpty && !wear.contains(item.wear)) return false;
+    if (collection.isNotEmpty && !collection.contains(item.collection)) return false;
     if (priceRange != null &&
         (item.currentPrice < priceRange.min ||
             item.currentPrice >= priceRange.max)) {
@@ -181,10 +197,10 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   }
 
   bool _hasActiveFilters() {
-    return ref.read(_storageRarityProvider) != null ||
-        ref.read(_storageWeaponTypeProvider) != null ||
-        ref.read(_storageWearProvider) != null ||
-        ref.read(_storageCollectionProvider) != null ||
+    return ref.read(_storageRarityProvider).isNotEmpty ||
+        ref.read(_storageWeaponTypeProvider).isNotEmpty ||
+        ref.read(_storageWearProvider).isNotEmpty ||
+        ref.read(_storageCollectionProvider).isNotEmpty ||
         ref.read(_storagePriceRangeProvider) != null;
   }
 
@@ -625,7 +641,6 @@ class _StorageFilterSheet extends ConsumerWidget {
     final currentWear = ref.watch(_storageWearProvider);
     final currentCollection = ref.watch(_storageCollectionProvider);
     final currentPriceRange = ref.watch(_storagePriceRangeProvider);
-    final collections = ref.watch(_storageAvailableCollectionsProvider);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -653,10 +668,10 @@ class _StorageFilterSheet extends ConsumerWidget {
               ),
               TextButton(
                 onPressed: () {
-                  ref.read(_storageRarityProvider.notifier).set(null);
-                  ref.read(_storageWeaponTypeProvider.notifier).set(null);
-                  ref.read(_storageWearProvider.notifier).set(null);
-                  ref.read(_storageCollectionProvider.notifier).set(null);
+                  ref.read(_storageRarityProvider.notifier).clear();
+                  ref.read(_storageWeaponTypeProvider.notifier).clear();
+                  ref.read(_storageWearProvider.notifier).clear();
+                  ref.read(_storageCollectionProvider.notifier).clear();
                   ref.read(_storagePriceRangeProvider.notifier).set(null);
                 },
                 child: const Text('Clear All'),
@@ -664,77 +679,94 @@ class _StorageFilterSheet extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 16),
-          _FilterDropdown<String?>(
-            label: 'Rarity',
-            value: currentRarity,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('All Rarities')),
-              ...['Extraordinary', 'Covert', 'Classified', 'Restricted', 'Mil-Spec',
-                  'Industrial Grade', 'Consumer Grade']
-                  .map((r) => DropdownMenuItem(
-                        value: r,
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 12,
-                              height: 12,
-                              margin: const EdgeInsets.only(right: 8),
-                              decoration: BoxDecoration(
-                                color: CS2Colors.fromRarity(r),
-                                shape: BoxShape.circle,
-                              ),
+
+          Text('Rarity', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: ['Extraordinary', 'Covert', 'Classified', 'Restricted', 'Mil-Spec',
+                'Industrial Grade', 'Consumer Grade']
+                .map((r) => FilterChip(
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 10,
+                            height: 10,
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: BoxDecoration(
+                              color: CS2Colors.fromRarity(r),
+                              shape: BoxShape.circle,
                             ),
-                            Text(r),
-                          ],
-                        ),
-                      )),
-            ],
-            onChanged: (value) {
-              ref.read(_storageRarityProvider.notifier).set(value);
-            },
+                          ),
+                          Text(r, style: const TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                      selected: currentRarity.contains(r),
+                      onSelected: (_) => ref.read(_storageRarityProvider.notifier).toggle(r),
+                      visualDensity: VisualDensity.compact,
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 12),
-          _FilterDropdown<String?>(
-            label: 'Weapon Type',
-            value: currentWeaponType,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('All Types')),
-              ...['Rifle', 'Pistol', 'SMG', 'Shotgun', 'Machine Gun',
-                  'Knife', 'Gloves', 'Container', 'Sticker', 'Agent', 'Patch']
-                  .map((t) => DropdownMenuItem(value: t, child: Text(t))),
-            ],
-            onChanged: (value) {
-              ref.read(_storageWeaponTypeProvider.notifier).set(value);
-            },
+
+          Text('Weapon Type', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: ['Rifle', 'Pistol', 'SMG', 'Shotgun', 'Machine Gun',
+                'Knife', 'Gloves', 'Container', 'Sticker', 'Agent', 'Patch']
+                .map((t) => FilterChip(
+                      label: Text(t, style: const TextStyle(fontSize: 12)),
+                      selected: currentWeaponType.contains(t),
+                      onSelected: (_) => ref.read(_storageWeaponTypeProvider.notifier).toggle(t),
+                      visualDensity: VisualDensity.compact,
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 12),
-          _FilterDropdown<String?>(
-            label: 'Wear',
-            value: currentWear,
-            items: [
-              const DropdownMenuItem(value: null, child: Text('All Wears')),
-              ...['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred']
-                  .map((w) => DropdownMenuItem(value: w, child: Text(w))),
-            ],
-            onChanged: (value) {
-              ref.read(_storageWearProvider.notifier).set(value);
-            },
+
+          Text('Wear', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred']
+                .map((w) => FilterChip(
+                      label: Text(w, style: const TextStyle(fontSize: 12)),
+                      selected: currentWear.contains(w),
+                      onSelected: (_) => ref.read(_storageWearProvider.notifier).toggle(w),
+                      visualDensity: VisualDensity.compact,
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 12),
-          if (collections.isNotEmpty) ...[
-            _FilterDropdown<String?>(
-              label: 'Collection',
-              value: currentCollection,
-              items: [
-                const DropdownMenuItem(value: null, child: Text('All Collections')),
-                ...collections.map((c) => DropdownMenuItem(value: c, child: Text(c))),
-              ],
-              onChanged: (value) {
-                ref.read(_storageCollectionProvider.notifier).set(value);
-              },
+
+          Text('Collection', style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () => _showStorageCollectionPicker(context, ref),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).scaffoldBackgroundColor,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                currentCollection.isEmpty
+                    ? 'All Collections'
+                    : '${currentCollection.length} selected',
+                style: TextStyle(
+                  color: currentCollection.isEmpty ? Colors.grey[500] : Colors.white,
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
-          ],
+          ),
+          const SizedBox(height: 12),
+
           _FilterDropdown<PriceRange?>(
             label: 'Price Range',
             value: _currentPriceRangeEnum(currentPriceRange),
@@ -765,12 +797,101 @@ class _StorageFilterSheet extends ConsumerWidget {
     );
   }
 
+  void _showStorageCollectionPicker(BuildContext context, WidgetRef ref) {
+    showDialog(
+      context: context,
+      builder: (context) => const _StorageCollectionPickerDialog(),
+    );
+  }
+
   PriceRange? _currentPriceRangeEnum(({double min, double max})? range) {
     if (range == null) return null;
     for (final r in PriceRange.values) {
       if (r.min == range.min && r.max == range.max) return r;
     }
     return null;
+  }
+}
+
+class _StorageCollectionPickerDialog extends ConsumerStatefulWidget {
+  const _StorageCollectionPickerDialog();
+
+  @override
+  ConsumerState<_StorageCollectionPickerDialog> createState() =>
+      _StorageCollectionPickerDialogState();
+}
+
+class _StorageCollectionPickerDialogState
+    extends ConsumerState<_StorageCollectionPickerDialog> {
+  String _search = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = ref.watch(_storageCollectionProvider);
+    final filtered = allCs2Collections
+        .where((c) => c.toLowerCase().contains(_search.toLowerCase()))
+        .toList();
+
+    return Dialog(
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      child: SizedBox(
+        width: double.maxFinite,
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search collections...',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                onChanged: (v) => setState(() => _search = v),
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: filtered.length,
+                itemBuilder: (context, i) {
+                  final name = filtered[i];
+                  return CheckboxListTile(
+                    title: Text(name, style: const TextStyle(fontSize: 14)),
+                    value: selected.contains(name),
+                    dense: true,
+                    onChanged: (_) {
+                      ref
+                          .read(_storageCollectionProvider.notifier)
+                          .toggle(name);
+                    },
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () =>
+                        ref.read(_storageCollectionProvider.notifier).clear(),
+                    child: const Text('Clear'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Done'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
