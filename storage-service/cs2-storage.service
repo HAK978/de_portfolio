@@ -1,0 +1,15 @@
+[Unit]
+Description=CS2 Storage Service
+After=network.target
+
+[Service]
+Type=simple
+User=harshavinashkute
+WorkingDirectory=/home/harshavinashkute/de_portfolio/storage-service
+EnvironmentFile=/home/harshavinashkute/de_portfolio/storage-service/.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

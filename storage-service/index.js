@@ -11,8 +11,24 @@ const app = express();
 const itemResolver = new ItemResolver();
 app.use(express.json());
 
-const PORT = 3456;
+// ── Config (env vars for remote, defaults for local dev) ─
+const PORT = process.env.PORT || 3456;
+const API_KEY = process.env.API_KEY || '';
+const REFRESH_TOKEN_ENV = process.env.REFRESH_TOKEN || '';
 const TOKEN_FILE = path.join(__dirname, '.refresh_token');
+
+// ── API key auth middleware ───────────────────────────────
+// Only enforced if API_KEY env var is set. Skipped for local dev.
+if (API_KEY) {
+  app.use((req, res, next) => {
+    const key = req.headers['x-api-key'];
+    if (key !== API_KEY) {
+      return res.status(401).json({ error: 'Invalid or missing API key' });
+    }
+    next();
+  });
+  console.log('[Auth] API key protection enabled');
+}
 
 // ── Steam & GC instances ──────────────────────────────────
 let user = new SteamUser();
@@ -76,7 +92,7 @@ function waitForGC(timeoutMs = 15000) {
 
 // ── Helper: interactive login ─────────────────────────────
 // Creates a refresh token from Steam credentials.
-// Only needed once — the token is saved and reused.
+// Only used for local dev — not available on remote servers (no TTY).
 
 async function interactiveLogin() {
   const rl = readline.createInterface({
@@ -245,13 +261,25 @@ app.get('/storage/:casketId', async (req, res) => {
 async function start() {
   let refreshToken;
 
-  // Check for saved refresh token
-  if (fs.existsSync(TOKEN_FILE)) {
+  // 1. Check env var (remote deployment)
+  if (REFRESH_TOKEN_ENV) {
+    refreshToken = REFRESH_TOKEN_ENV;
+    console.log('[Auth] Using refresh token from environment');
+  }
+  // 2. Check saved file (local dev)
+  else if (fs.existsSync(TOKEN_FILE)) {
     refreshToken = fs.readFileSync(TOKEN_FILE, 'utf-8').trim();
-    console.log('[Auth] Found saved refresh token');
-  } else {
-    // First run — interactive login
+    console.log('[Auth] Found saved refresh token file');
+  }
+  // 3. Interactive login (local dev only — needs a terminal)
+  else if (process.stdin.isTTY) {
     refreshToken = await interactiveLogin();
+  }
+  // 4. No token and no way to get one
+  else {
+    console.error('[Auth] No refresh token found.');
+    console.error('       Set REFRESH_TOKEN env var, or run locally first to generate .refresh_token');
+    process.exit(1);
   }
 
   // Initialize item resolver (downloads fresh item definitions)
@@ -263,7 +291,14 @@ async function start() {
     await loginWithToken(refreshToken);
   } catch (err) {
     console.error('[Steam] Login failed:', err.message);
-    // Token might be expired — re-do interactive login
+
+    if (REFRESH_TOKEN_ENV) {
+      // Can't re-auth on remote — exit so the operator knows
+      console.error('[Auth] REFRESH_TOKEN env var may be expired. Generate a new one locally.');
+      process.exit(1);
+    }
+
+    // Local dev — try interactive login
     if (fs.existsSync(TOKEN_FILE)) {
       fs.unlinkSync(TOKEN_FILE);
     }
@@ -281,11 +316,11 @@ async function start() {
     console.log('[GC] Will keep trying in background. Start the app anyway.');
   }
 
-  // Start HTTP server
-  app.listen(PORT, () => {
-    console.log(`\n[Server] Storage service running at http://localhost:${PORT}`);
-    console.log(`[Server] Status: http://localhost:${PORT}/status`);
-    console.log(`[Server] Casket:  http://localhost:${PORT}/storage/{casketId}\n`);
+  // Start HTTP server — bind 0.0.0.0 so it's reachable from outside
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n[Server] Storage service running on port ${PORT}`);
+    console.log(`[Server] Status: http://0.0.0.0:${PORT}/status`);
+    console.log(`[Server] Auth:   ${API_KEY ? 'API key required' : 'OPEN (no API_KEY set)'}\n`);
   });
 }
 

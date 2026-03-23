@@ -12,22 +12,97 @@ import '../services/price_service.dart';
 import '../services/storage_service.dart';
 import 'price_provider.dart';
 
-/// The base URL for the local storage service.
+/// The base URL for the storage service.
 final storageServiceUrlProvider = NotifierProvider<StorageServiceUrlNotifier, String>(
   StorageServiceUrlNotifier.new,
 );
 
 class StorageServiceUrlNotifier extends Notifier<String> {
-  @override
-  String build() => 'http://localhost:3456';
+  static const _fileName = 'storage_service_url.txt';
 
-  void set(String url) => state = url;
+  @override
+  String build() {
+    _loadSaved();
+    return 'http://localhost:3456';
+  }
+
+  void set(String url) {
+    state = url;
+    _save(url);
+  }
+
+  Future<void> _loadSaved() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_fileName');
+      if (file.existsSync()) {
+        final url = await file.readAsString();
+        if (url.trim().isNotEmpty) state = url.trim();
+      }
+    } catch (e) {
+      debugPrint('Error loading storage service URL: $e');
+    }
+  }
+
+  Future<void> _save(String url) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_fileName');
+      await file.writeAsString(url);
+    } catch (e) {
+      debugPrint('Error saving storage service URL: $e');
+    }
+  }
 }
 
-/// StorageService instance, rebuilt when URL changes.
+/// API key for the remote storage service.
+final storageApiKeyProvider = NotifierProvider<StorageApiKeyNotifier, String>(
+  StorageApiKeyNotifier.new,
+);
+
+class StorageApiKeyNotifier extends Notifier<String> {
+  static const _fileName = 'storage_api_key.txt';
+
+  @override
+  String build() {
+    _loadSaved();
+    return '';
+  }
+
+  void set(String value) {
+    state = value;
+    _save(value);
+  }
+
+  Future<void> _loadSaved() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_fileName');
+      if (file.existsSync()) {
+        final key = await file.readAsString();
+        if (key.trim().isNotEmpty) state = key.trim();
+      }
+    } catch (e) {
+      debugPrint('Error loading storage API key: $e');
+    }
+  }
+
+  Future<void> _save(String key) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_fileName');
+      await file.writeAsString(key);
+    } catch (e) {
+      debugPrint('Error saving storage API key: $e');
+    }
+  }
+}
+
+/// StorageService instance, rebuilt when URL or API key changes.
 final storageServiceProvider = Provider<StorageService>((ref) {
   final url = ref.watch(storageServiceUrlProvider);
-  return StorageService(baseUrl: url);
+  final apiKey = ref.watch(storageApiKeyProvider);
+  return StorageService(baseUrl: url, apiKey: apiKey.isNotEmpty ? apiKey : null);
 });
 
 /// Connection status — checked when user taps "Connect".

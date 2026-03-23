@@ -179,6 +179,7 @@ class StorageScreen extends ConsumerStatefulWidget {
 
 class _StorageScreenState extends ConsumerState<StorageScreen> {
   final _urlController = TextEditingController();
+  final _apiKeyController = TextEditingController();
   final _searchController = TextEditingController();
   bool _showUrlInput = false;
 
@@ -186,6 +187,7 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   void initState() {
     super.initState();
     _urlController.text = ref.read(storageServiceUrlProvider);
+    _apiKeyController.text = ref.read(storageApiKeyProvider);
     _searchController.text = ref.read(_storageSearchProvider);
     _searchController.addListener(() => setState(() {}));
   }
@@ -193,6 +195,7 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   @override
   void dispose() {
     _urlController.dispose();
+    _apiKeyController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -280,31 +283,51 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
           if (_showUrlInput)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Row(
+              child: Column(
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _urlController,
-                      decoration: InputDecoration(
-                        labelText: 'Service URL',
-                        hintText: 'http://192.168.1.100:3456',
-                        isDense: true,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _urlController,
+                          decoration: InputDecoration(
+                            labelText: 'Service URL',
+                            hintText: 'http://192.168.1.100:3456',
+                            isDense: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          style: const TextStyle(fontSize: 14),
                         ),
                       ),
-                      style: const TextStyle(fontSize: 14),
-                    ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () {
+                          ref.read(storageServiceUrlProvider.notifier).set(
+                                _urlController.text.trim(),
+                              );
+                          ref.read(storageApiKeyProvider.notifier).set(
+                                _apiKeyController.text.trim(),
+                              );
+                          setState(() => _showUrlInput = false);
+                        },
+                        child: const Text('Save'),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: () {
-                      ref.read(storageServiceUrlProvider.notifier).set(
-                            _urlController.text.trim(),
-                          );
-                      setState(() => _showUrlInput = false);
-                    },
-                    child: const Text('Save'),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _apiKeyController,
+                    decoration: InputDecoration(
+                      labelText: 'API Key (optional for local)',
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    style: const TextStyle(fontSize: 14),
+                    obscureText: true,
                   ),
                 ],
               ),

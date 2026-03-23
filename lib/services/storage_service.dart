@@ -13,14 +13,19 @@ import '../models/cs2_item.dart';
 /// the PC's local IP instead of localhost.
 class StorageService {
   final String baseUrl;
+  final String? apiKey;
 
-  StorageService({required this.baseUrl});
+  StorageService({required this.baseUrl, this.apiKey});
+
+  Map<String, String> get _headers => {
+    if (apiKey != null && apiKey!.isNotEmpty) 'X-Api-Key': apiKey!,
+  };
 
   /// Check if the service is running and connected to GC.
   Future<StorageStatus> getStatus() async {
     try {
       final response = await http
-          .get(Uri.parse('$baseUrl/status'))
+          .get(Uri.parse('$baseUrl/status'), headers: _headers)
           .timeout(const Duration(seconds: 5));
 
       if (response.statusCode != 200) {
@@ -43,7 +48,7 @@ class StorageService {
   /// Fetch the list of storage units (caskets) from inventory.
   Future<List<CasketInfo>> getCaskets() async {
     final response = await http
-        .get(Uri.parse('$baseUrl/caskets'))
+        .get(Uri.parse('$baseUrl/caskets'), headers: _headers)
         .timeout(const Duration(seconds: 10));
 
     if (response.statusCode != 200) {
@@ -67,7 +72,7 @@ class StorageService {
   /// Returns resolved items with names, images, rarity, etc.
   Future<List<CS2Item>> getCasketContents(String casketId) async {
     final response = await http
-        .get(Uri.parse('$baseUrl/storage/$casketId'))
+        .get(Uri.parse('$baseUrl/storage/$casketId'), headers: _headers)
         .timeout(const Duration(seconds: 60));
 
     if (response.statusCode != 200) {
