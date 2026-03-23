@@ -23,7 +23,7 @@ class StorageServiceUrlNotifier extends Notifier<String> {
   @override
   String build() {
     _loadSaved();
-    return 'http://localhost:3456';
+    return 'http://34.44.97.110:3456';
   }
 
   void set(String url) {
