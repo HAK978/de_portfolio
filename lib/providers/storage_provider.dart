@@ -229,6 +229,9 @@ class StorageNotifier extends Notifier<StorageState> {
 
       final newLoading = {...state.loadingCaskets}..remove(casketId);
       state = state.copyWith(units: updatedUnits, loadingCaskets: newLoading);
+
+      // Save to cache so collection data persists across restarts
+      await _saveCache(casketId, withCached);
     } catch (e) {
       debugPrint('Failed to fetch contents for $casketId: $e');
       final newLoading = {...state.loadingCaskets}..remove(casketId);

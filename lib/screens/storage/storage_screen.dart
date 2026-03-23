@@ -405,11 +405,9 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                         steamProgress: steamProgress,
                         csfloatProgress: csfloatProgress,
                         onExpand: () {
-                          if (unit.items.isEmpty) {
-                            ref
-                                .read(storageProvider.notifier)
-                                .fetchContents(unit.id);
-                          }
+                          ref
+                              .read(storageProvider.notifier)
+                              .fetchContents(unit.id);
                         },
                         onFetchPrices: () {
                           ref
@@ -554,7 +552,7 @@ class _StorageUnitCard extends StatelessWidget {
           if (expanded) onExpand();
         },
         children: [
-          if (isLoading)
+          if (isLoading && unit.items.isEmpty)
             const Padding(
               padding: EdgeInsets.all(24),
               child: Center(child: CircularProgressIndicator()),
