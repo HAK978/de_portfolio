@@ -36,6 +36,7 @@ let csgo = new GlobalOffensive(user);
 let isLoggedIn = false;
 let isGCConnected = false;
 let steamDisplayName = '';
+let currentRefreshToken = '';
 
 // ── Steam event handlers ──────────────────────────────────
 
@@ -51,10 +52,33 @@ user.on('accountInfo', (name) => {
   console.log(`[Steam] Account: ${name}`);
 });
 
+// Gracefully yield when the real Steam client starts playing,
+// and resume when it stops. This avoids LoggedInElsewhere kicks.
+user.on('playingState', (blocked, playingApp) => {
+  if (blocked) {
+    console.log(`[Steam] Blocked — app ${playingApp} is playing elsewhere. Yielding...`);
+    user.gamesPlayed([]); // stop "playing" so we don't get kicked
+  } else {
+    console.log('[Steam] Other session stopped playing. Resuming CS2...');
+    user.gamesPlayed([730], true);
+  }
+});
+
 user.on('error', (err) => {
   console.error('[Steam] Error:', err.message);
   isLoggedIn = false;
   isGCConnected = false;
+
+  // LoggedInElsewhere is fatal — autoRelogin won't handle it.
+  // Wait and reconnect automatically.
+  if (err.eresult === 6) { // EResult.LoggedInElsewhere
+    const delaySec = 30;
+    console.log(`[Steam] Will reconnect in ${delaySec}s...`);
+    setTimeout(() => {
+      console.log('[Steam] Reconnecting...');
+      user.logOn({ refreshToken: currentRefreshToken });
+    }, delaySec * 1000);
+  }
 });
 
 user.on('disconnected', (eresult, msg) => {
@@ -281,6 +305,9 @@ async function start() {
     console.error('       Set REFRESH_TOKEN env var, or run locally first to generate .refresh_token');
     process.exit(1);
   }
+
+  // Store token for auto-reconnect on LoggedInElsewhere
+  currentRefreshToken = refreshToken;
 
   // Initialize item resolver (downloads fresh item definitions)
   await itemResolver.init();
