@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'models/cs2_item.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/inventory/inventory_screen.dart';
 import 'screens/inventory/item_detail_screen.dart';
@@ -85,6 +86,18 @@ final goRouter = GoRouter(
         GoRoute(
           path: '/storage',
           builder: (context, state) => const StorageScreen(),
+          routes: [
+            GoRoute(
+              path: 'item',
+              builder: (context, state) {
+                final item = state.extra as CS2Item;
+                return ItemDetailScreen(
+                  itemId: item.marketHashName,
+                  passedItem: item,
+                );
+              },
+            ),
+          ],
         ),
         GoRoute(
           path: '/settings',

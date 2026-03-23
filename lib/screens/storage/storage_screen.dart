@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../models/cs2_collections.dart';
@@ -533,6 +534,7 @@ class _StorageUnitCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final currencyFormat = NumberFormat.currency(symbol: '\$');
+    final totalFilteredQty = filteredItems.fold(0, (int sum, item) => sum + item.quantity);
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -579,8 +581,8 @@ class _StorageUnitCard extends StatelessWidget {
                 children: [
                   Text(
                     filteredItems.length == unit.items.length
-                        ? '${unit.items.length} unique items'
-                        : '${filteredItems.length}/${unit.items.length} items',
+                        ? '${unit.items.length} unique \u00b7 ${unit.itemCount} total'
+                        : '${filteredItems.length} unique \u00b7 $totalFilteredQty total',
                     style: TextStyle(color: Colors.grey[500], fontSize: 12),
                   ),
                   const Spacer(),
@@ -617,7 +619,11 @@ class _StorageUnitCard extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   itemCount: filteredItems.length,
                   itemBuilder: (context, index) {
-                    return ItemCard(item: filteredItems[index]);
+                    final item = filteredItems[index];
+                    return ItemCard(
+                      item: item,
+                      onTap: () => context.go('/storage/item', extra: item),
+                    );
                   },
                 ),
               ),

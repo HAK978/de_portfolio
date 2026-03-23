@@ -11,17 +11,22 @@ import '../../widgets/price_chart.dart';
 
 class ItemDetailScreen extends ConsumerWidget {
   final String itemId;
-  const ItemDetailScreen({super.key, required this.itemId});
+  final CS2Item? passedItem;
+  const ItemDetailScreen({super.key, required this.itemId, this.passedItem});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final itemsAsync = ref.watch(inventoryProvider);
-    final items = itemsAsync.when(
-      data: (data) => data,
-      loading: () => <CS2Item>[],
-      error: (_, _) => <CS2Item>[],
-    );
-    final item = items.where((i) => i.id == itemId).firstOrNull;
+    // Use passed item (storage) or look up from inventory
+    CS2Item? item = passedItem;
+    if (item == null) {
+      final itemsAsync = ref.watch(inventoryProvider);
+      final items = itemsAsync.when(
+        data: (data) => data,
+        loading: () => <CS2Item>[],
+        error: (_, _) => <CS2Item>[],
+      );
+      item = items.where((i) => i.id == itemId).firstOrNull;
+    }
 
     if (item == null) {
       return Scaffold(
