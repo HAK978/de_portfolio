@@ -288,6 +288,20 @@ class _PriceChartState extends State<PriceChart> {
               borderData: FlBorderData(show: false),
               minY: (minPrice - padding).clamp(0, double.infinity),
               maxY: maxPrice + padding,
+              extraLinesData: ExtraLinesData(
+                verticalLines: _touchedIndex != null &&
+                        _touchedIndex! >= 0 &&
+                        _touchedIndex! < data.length
+                    ? [
+                        VerticalLine(
+                          x: _touchedIndex!.toDouble(),
+                          color: Colors.white.withAlpha(40),
+                          strokeWidth: 1,
+                          dashArray: [4, 4],
+                        ),
+                      ]
+                    : [],
+              ),
               lineBarsData: [
                 LineChartBarData(
                   spots: spots,
@@ -339,7 +353,7 @@ class _PriceChartState extends State<PriceChart> {
                           ? DateFormat('MMM d, yyyy HH:mm')
                           : DateFormat('MMM d, yyyy');
                       return LineTooltipItem(
-                        '\$${point.price.toStringAsFixed(2)}\n${dateFormat.format(point.date)}',
+                        '\$${point.price.toStringAsFixed(2)}\n${dateFormat.format(point.date)}\n${point.volume} sold',
                         const TextStyle(
                           color: Colors.white,
                           fontSize: 12,
@@ -358,6 +372,16 @@ class _PriceChartState extends State<PriceChart> {
               transformationController: _transformController,
             ),
           ),
+        ),
+        const SizedBox(height: 4),
+
+        // Minimap — always visible, tap to navigate when zoomed
+        _Minimap(
+          spots: spots,
+          lineColor: lineColor,
+          minY: (minPrice - padding).clamp(0, double.infinity),
+          maxY: maxPrice + padding,
+          transformController: _transformController,
         ),
         const SizedBox(height: 8),
 
@@ -405,6 +429,137 @@ class _PriceChartState extends State<PriceChart> {
           }).toList(),
         ),
       ],
+    );
+  }
+}
+
+/// A small overview chart that's always visible.
+/// When zoomed, shows a viewport rectangle and supports tap-to-navigate.
+class _Minimap extends StatelessWidget {
+  final List<FlSpot> spots;
+  final Color lineColor;
+  final double minY;
+  final double maxY;
+  final TransformationController transformController;
+
+  const _Minimap({
+    required this.spots,
+    required this.lineColor,
+    required this.minY,
+    required this.maxY,
+    required this.transformController,
+  });
+
+  void _onTap(double tapFraction) {
+    final matrix = transformController.value;
+    final scaleX = matrix.getMaxScaleOnAxis();
+    if (scaleX <= 1.05) return; // not zoomed, nothing to navigate
+
+    // Center the viewport on the tapped position
+    final viewWidth = 1.0 / scaleX;
+    final targetStart = (tapFraction - viewWidth / 2).clamp(0.0, 1.0 - viewWidth);
+    final translateX = -targetStart * scaleX;
+
+    // Keep the same horizontal-only scale, just change translation
+    final newMatrix = Matrix4.identity()
+      ..setEntry(0, 0, scaleX)
+      ..setTranslationRaw(translateX, 0, 0);
+    transformController.value = newMatrix;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: transformController,
+      builder: (context, _) {
+        final matrix = transformController.value;
+        final scaleX = matrix.getMaxScaleOnAxis();
+        final isZoomed = scaleX > 1.05;
+
+        final translateX = matrix.getTranslation().x;
+        final viewStart =
+            (-translateX / scaleX).clamp(0.0, 1.0 - 1.0 / scaleX);
+        final viewWidth = (1.0 / scaleX).clamp(0.0, 1.0);
+
+        return GestureDetector(
+          onTapDown: (details) {
+            final box = context.findRenderObject() as RenderBox?;
+            if (box == null) return;
+            final fraction = details.localPosition.dx / box.size.width;
+            _onTap(fraction.clamp(0.0, 1.0));
+          },
+          onHorizontalDragUpdate: (details) {
+            final box = context.findRenderObject() as RenderBox?;
+            if (box == null) return;
+            final fraction = details.localPosition.dx / box.size.width;
+            _onTap(fraction.clamp(0.0, 1.0));
+          },
+          child: SizedBox(
+            height: 32,
+            child: Stack(
+              children: [
+                // Mini line chart
+                Positioned.fill(
+                  child: LineChart(
+                    LineChartData(
+                      gridData: const FlGridData(show: false),
+                      titlesData: const FlTitlesData(show: false),
+                      borderData: FlBorderData(
+                        show: true,
+                        border:
+                            Border.all(color: Colors.white.withAlpha(15)),
+                      ),
+                      minY: minY,
+                      maxY: maxY,
+                      lineBarsData: [
+                        LineChartBarData(
+                          spots: spots,
+                          isCurved: true,
+                          curveSmoothness: 0.2,
+                          color: lineColor.withAlpha(80),
+                          barWidth: 1,
+                          dotData: const FlDotData(show: false),
+                        ),
+                      ],
+                      lineTouchData: const LineTouchData(enabled: false),
+                    ),
+                  ),
+                ),
+                // Viewport indicator (only when zoomed)
+                if (isZoomed)
+                  Positioned.fill(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final left = viewStart * constraints.maxWidth;
+                        final width = viewWidth * constraints.maxWidth;
+                        return Stack(
+                          children: [
+                            Positioned(
+                              left: left,
+                              width: width,
+                              top: 0,
+                              bottom: 0,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.blueAccent.withAlpha(25),
+                                  border: Border.all(
+                                    color: Colors.blueAccent.withAlpha(80),
+                                    width: 1,
+                                  ),
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

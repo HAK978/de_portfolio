@@ -41,6 +41,14 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 - Floats auto-fetch from GC after every Steam inventory refresh
 - Floats are cached to disk so they persist across restarts
 
+#### Price chart minimap with viewport navigation
+- Added `_Minimap` widget below the main price chart — always visible, shows the entire dataset as a small overview line chart
+- When the main chart is zoomed (pinch-to-zoom via FlTransformationConfig), the minimap highlights the currently visible window with a blue rectangle
+- Tap or drag on the minimap to navigate — the viewport rectangle slides and the main chart follows to that position
+- Uses `AnimatedBuilder` listening to the `TransformationController` so the viewport indicator updates in real-time during zoom/pan
+- Matrix construction uses horizontal-only scaling (`setEntry(0, 0, scaleX)`) to match fl_chart's `FlScaleAxis.horizontal` mode
+- Range chip changes reset the zoom transform back to identity
+
 ### Key files and their roles
 - `lib/models/cs2_item.dart` — item model with copyWith, toJson, fromJson, csfloatPrice, collection, floatValue, individualFloats
 - `lib/models/storage_unit.dart` — storage unit model with items list
