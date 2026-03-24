@@ -78,7 +78,10 @@ class ItemCard extends StatelessWidget {
                         Text(
                           [
                             if (item.isStatTrak) 'StatTrak\u2122',
-                            if (item.wear != null) item.wear!,
+                            if (item.floatValue != null)
+                              item.floatValue!.toStringAsFixed(5)
+                            else if (item.wear != null)
+                              item.wear!,
                             if (item.quantity > 1) '\u00d7${item.quantity}',
                           ].join(' \u2022 '),
                           style: TextStyle(

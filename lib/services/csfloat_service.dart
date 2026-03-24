@@ -35,6 +35,7 @@ class CsfloatService {
     final uri = Uri.parse(_baseUrl).replace(queryParameters: {
       'market_hash_name': marketHashName,
       'sort_by': 'lowest_price',
+      'type': 'buy_now',
       'limit': '1',
     });
 

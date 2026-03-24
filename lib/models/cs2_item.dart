@@ -22,6 +22,7 @@ class CS2Item {
   final String imageUrl;
   final String marketHashName; // Steam market identifier
   final String? collection; // e.g. "The Bravo Collection" (from Steam tag "ItemSet")
+  final double? floatValue; // raw paint wear float (e.g. 0.06123456)
 
   const CS2Item({
     required this.id,
@@ -43,6 +44,7 @@ class CS2Item {
     required this.imageUrl,
     required this.marketHashName,
     this.collection,
+    this.floatValue,
   });
 
   /// Creates a copy of this item with the given fields replaced.
@@ -70,6 +72,7 @@ class CS2Item {
     String? imageUrl,
     String? marketHashName,
     String? collection,
+    double? floatValue,
   }) {
     return CS2Item(
       id: id ?? this.id,
@@ -91,6 +94,7 @@ class CS2Item {
       imageUrl: imageUrl ?? this.imageUrl,
       marketHashName: marketHashName ?? this.marketHashName,
       collection: collection ?? this.collection,
+      floatValue: floatValue ?? this.floatValue,
     );
   }
 
@@ -115,6 +119,7 @@ class CS2Item {
     'imageUrl': imageUrl,
     'marketHashName': marketHashName,
     'collection': collection,
+    'floatValue': floatValue,
   };
 
   /// Creates a CS2Item from a JSON map (loaded from cache).
@@ -138,6 +143,7 @@ class CS2Item {
     imageUrl: json['imageUrl'] as String,
     marketHashName: json['marketHashName'] as String,
     collection: json['collection'] as String?,
+    floatValue: (json['floatValue'] as num?)?.toDouble(),
   );
 
   /// Full display name including StatTrak/Souvenir prefix and wear.

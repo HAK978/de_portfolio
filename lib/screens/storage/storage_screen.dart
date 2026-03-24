@@ -635,20 +635,18 @@ class _StorageUnitCard extends StatelessWidget {
                 ),
               )
             else
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 500),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: filteredItems.length,
-                  itemBuilder: (context, index) {
-                    final item = filteredItems[index];
-                    return ItemCard(
-                      item: item,
-                      onTap: () => context.go('/storage/item', extra: item),
-                    );
-                  },
-                ),
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                itemCount: filteredItems.length,
+                itemBuilder: (context, index) {
+                  final item = filteredItems[index];
+                  return ItemCard(
+                    item: item,
+                    onTap: () => context.go('/storage/item', extra: item),
+                  );
+                },
               ),
             const SizedBox(height: 8),
           ],
