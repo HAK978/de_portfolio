@@ -179,6 +179,8 @@ class ItemDetailScreen extends ConsumerWidget {
                   _DetailRow(label: 'Weapon Type', value: item.weaponType),
                   _DetailRow(label: 'Skin', value: item.skinName.isEmpty ? 'N/A' : item.skinName),
                   if (item.wear != null) _DetailRow(label: 'Wear', value: item.wear!),
+                  if (item.floatValue != null)
+                    _DetailRow(label: 'Float', value: item.floatValue!.toStringAsFixed(6)),
                   _DetailRow(label: 'Quantity', value: '${item.quantity}'),
                   _DetailRow(label: 'Location', value: item.location),
                   if (item.quantity > 1)
@@ -190,6 +192,31 @@ class ItemDetailScreen extends ConsumerWidget {
               ),
             ),
           ),
+          // Individual floats for grouped items
+          if (item.individualFloats.length > 1) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Individual Floats (${item.individualFloats.length})',
+                      style: TextStyle(color: Colors.grey[400], fontSize: 14),
+                    ),
+                    const SizedBox(height: 8),
+                    ...item.individualFloats.asMap().entries.map((e) =>
+                      _DetailRow(
+                        label: 'Copy ${e.key + 1}',
+                        value: e.value.toStringAsFixed(6),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
 
           // Price history chart

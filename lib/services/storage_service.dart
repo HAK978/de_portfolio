@@ -110,6 +110,36 @@ class StorageService {
     );
   }
 
+  /// Fetch float values for inventory items from the GC.
+  /// Returns a map of marketHashName → list of float data.
+  Future<Map<String, List<FloatData>>> getInventoryFloats() async {
+    final response = await http
+        .get(Uri.parse('$baseUrl/inventory/floats'), headers: _headers)
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to fetch inventory floats (${response.statusCode})');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final floatsMap = data['floats'] as Map<String, dynamic>;
+
+    final result = <String, List<FloatData>>{};
+    for (final entry in floatsMap.entries) {
+      final items = (entry.value as List<dynamic>).map((e) {
+        final map = e as Map<String, dynamic>;
+        return FloatData(
+          assetId: map['assetId'] as String? ?? '',
+          floatValue: (map['floatValue'] as num).toDouble(),
+          paintSeed: map['paintSeed'] as int?,
+          paintIndex: map['paintIndex'] as int?,
+        );
+      }).toList();
+      result[entry.key] = items;
+    }
+    return result;
+  }
+
   String _extractWeaponType(String name) {
     final pipeIdx = name.indexOf(' | ');
     if (pipeIdx > 0) {
@@ -158,5 +188,20 @@ class CasketInfo {
     required this.casketId,
     required this.name,
     required this.itemCount,
+  });
+}
+
+/// Float data for a single item instance from the GC.
+class FloatData {
+  final String assetId;
+  final double floatValue;
+  final int? paintSeed;
+  final int? paintIndex;
+
+  const FloatData({
+    required this.assetId,
+    required this.floatValue,
+    this.paintSeed,
+    this.paintIndex,
   });
 }

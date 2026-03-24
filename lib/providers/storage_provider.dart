@@ -557,20 +557,30 @@ class StorageNotifier extends Notifier<StorageState> {
     }).toList();
   }
 
-  /// Groups items by marketHashName, summing quantities.
+  /// Groups items by marketHashName, summing quantities and collecting floats.
   List<CS2Item> _groupItems(List<CS2Item> items) {
     final map = <String, CS2Item>{};
+    final floats = <String, List<double>>{};
     for (final item in items) {
-      final existing = map[item.marketHashName];
+      final key = item.marketHashName;
+      if (item.floatValue != null) {
+        (floats[key] ??= []).add(item.floatValue!);
+      }
+      final existing = map[key];
       if (existing != null) {
-        map[item.marketHashName] = existing.copyWith(
+        map[key] = existing.copyWith(
           quantity: existing.quantity + 1,
         );
       } else {
-        map[item.marketHashName] = item;
+        map[key] = item;
       }
     }
-    return map.values.toList()
+    // Attach sorted individual floats to each grouped item
+    return map.entries.map((e) {
+      final sortedFloats = floats[e.key] ?? [];
+      sortedFloats.sort();
+      return e.value.copyWith(individualFloats: sortedFloats);
+    }).toList()
       ..sort((a, b) => b.quantity.compareTo(a.quantity));
   }
 }

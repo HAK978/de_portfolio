@@ -293,6 +293,8 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
         actions: [
           // Fetch inventory from Steam
           _FetchInventoryButton(),
+          // Fetch float values from GC
+          _FetchFloatsButton(),
           // Filter button — opens bottom sheet
           IconButton(
             icon: Badge(
@@ -415,6 +417,43 @@ class _FetchInventoryButton extends ConsumerWidget {
       tooltip: 'Fetch inventory from Steam',
       onPressed: () {
         ref.read(inventoryProvider.notifier).refresh();
+      },
+    );
+  }
+}
+
+/// Button that fetches float values from the GC service.
+class _FetchFloatsButton extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_FetchFloatsButton> createState() => _FetchFloatsButtonState();
+}
+
+class _FetchFloatsButtonState extends ConsumerState<_FetchFloatsButton> {
+  bool _loading = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 12),
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+
+    return IconButton(
+      icon: const Icon(Icons.opacity, size: 22),
+      tooltip: 'Fetch float values',
+      onPressed: () async {
+        setState(() => _loading = true);
+        try {
+          await ref.read(inventoryProvider.notifier).fetchInventoryFloats();
+        } finally {
+          if (mounted) setState(() => _loading = false);
+        }
       },
     );
   }

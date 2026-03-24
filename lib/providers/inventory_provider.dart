@@ -286,6 +286,38 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     }
   }
 
+  /// Fetches float values for inventory items from the GC service.
+  /// Merges floats into existing items and persists to cache.
+  Future<void> fetchInventoryFloats() async {
+    final items = state.when(
+      data: (items) => items,
+      loading: () => null,
+      error: (_, _) => null,
+    );
+    if (items == null || items.isEmpty) return;
+
+    try {
+      final service = ref.read(storageServiceProvider);
+      final floatsMap = await service.getInventoryFloats();
+
+      final updatedItems = items.map((item) {
+        final floats = floatsMap[item.marketHashName];
+        if (floats == null || floats.isEmpty) return item;
+
+        final sortedFloats = floats.map((f) => f.floatValue).toList()..sort();
+        return item.copyWith(
+          floatValue: sortedFloats.first,
+          individualFloats: sortedFloats,
+        );
+      }).toList();
+
+      state = AsyncValue.data(updatedItems);
+      _updateCache(updatedItems);
+    } catch (e) {
+      debugPrint('Failed to fetch inventory floats: $e');
+    }
+  }
+
   /// Force re-fetch the inventory from Steam (ignores cache).
   Future<void> refresh() async {
     final steamId = ref.read(steamIdProvider);

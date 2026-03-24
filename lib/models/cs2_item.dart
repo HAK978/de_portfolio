@@ -23,6 +23,7 @@ class CS2Item {
   final String marketHashName; // Steam market identifier
   final String? collection; // e.g. "The Bravo Collection" (from Steam tag "ItemSet")
   final double? floatValue; // raw paint wear float (e.g. 0.06123456)
+  final List<double> individualFloats; // all float values when items are grouped
 
   const CS2Item({
     required this.id,
@@ -45,6 +46,7 @@ class CS2Item {
     required this.marketHashName,
     this.collection,
     this.floatValue,
+    this.individualFloats = const [],
   });
 
   /// Creates a copy of this item with the given fields replaced.
@@ -73,6 +75,7 @@ class CS2Item {
     String? marketHashName,
     String? collection,
     double? floatValue,
+    List<double>? individualFloats,
   }) {
     return CS2Item(
       id: id ?? this.id,
@@ -95,6 +98,7 @@ class CS2Item {
       marketHashName: marketHashName ?? this.marketHashName,
       collection: collection ?? this.collection,
       floatValue: floatValue ?? this.floatValue,
+      individualFloats: individualFloats ?? this.individualFloats,
     );
   }
 
@@ -120,6 +124,7 @@ class CS2Item {
     'marketHashName': marketHashName,
     'collection': collection,
     'floatValue': floatValue,
+    'individualFloats': individualFloats.isNotEmpty ? individualFloats : null,
   };
 
   /// Creates a CS2Item from a JSON map (loaded from cache).
@@ -144,6 +149,9 @@ class CS2Item {
     marketHashName: json['marketHashName'] as String,
     collection: json['collection'] as String?,
     floatValue: (json['floatValue'] as num?)?.toDouble(),
+    individualFloats: (json['individualFloats'] as List<dynamic>?)
+        ?.map((e) => (e as num).toDouble())
+        .toList() ?? const [],
   );
 
   /// Full display name including StatTrak/Souvenir prefix and wear.

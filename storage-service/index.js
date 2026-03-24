@@ -280,6 +280,79 @@ app.get('/storage/:casketId', async (req, res) => {
   }
 });
 
+// GET /inventory/floats — return float values for all inventory items
+// Uses GC inventory data directly (no inspect requests needed for own items)
+app.get('/inventory/floats', (req, res) => {
+  if (!isGCConnected) {
+    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+  }
+
+  const inventory = csgo.inventory || [];
+  const floats = {};
+
+  for (const item of inventory) {
+    if (item.paint_wear !== undefined && item.paint_wear > 0) {
+      // Key by def_index + paint_index + paint_wear to build a unique-ish key
+      // But for Flutter matching, we need market_hash_name → use itemResolver
+      const resolved = itemResolver._convertItem(item);
+      if (resolved && resolved.marketHashName) {
+        if (!floats[resolved.marketHashName]) {
+          floats[resolved.marketHashName] = [];
+        }
+        floats[resolved.marketHashName].push({
+          assetId: item.id,
+          floatValue: item.paint_wear,
+          paintSeed: item.paint_seed || null,
+          paintIndex: item.paint_index || null,
+        });
+      }
+    }
+  }
+
+  console.log(`[API] Returning floats for ${Object.keys(floats).length} unique items`);
+  res.json({ itemCount: Object.keys(floats).length, floats });
+});
+
+// GET /inspect?url=... — resolve float from an inspect link
+app.get('/inspect', async (req, res) => {
+  if (!isGCConnected) {
+    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+  }
+
+  const inspectLink = req.query.url;
+  if (!inspectLink) {
+    return res.status(400).json({ error: 'Missing ?url= parameter with inspect link' });
+  }
+
+  try {
+    const item = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Inspect request timed out (10s)'));
+      }, 12000);
+
+      csgo.inspectItem(inspectLink, (itemData) => {
+        clearTimeout(timeout);
+        resolve(itemData);
+      });
+    });
+
+    res.json({
+      assetId: item.itemid,
+      defIndex: item.defindex,
+      paintIndex: item.paintindex,
+      floatValue: item.paintwear,
+      paintSeed: item.paintseed,
+      rarity: item.rarity,
+      quality: item.quality,
+      stickers: item.stickers || [],
+      customName: item.customname || null,
+    });
+  } catch (err) {
+    console.error('[API] Inspect error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Startup ───────────────────────────────────────────────
 
 async function start() {
