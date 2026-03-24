@@ -178,6 +178,8 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       final items = await service.fetchInventory(steamId);
       debugPrint('Fetched ${items.length} items from Steam');
       _syncToFirestore(steamId, items);
+      // Auto-fetch floats from GC in the background after inventory loads
+      Future.microtask(() => fetchInventoryFloats());
       return items;
     } catch (e, stack) {
       debugPrint('Error fetching inventory: $e\n$stack');
