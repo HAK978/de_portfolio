@@ -20,11 +20,11 @@ enum ChartRange {
   const ChartRange(this.label, this.days);
 }
 
-/// Interactive line chart with native fl_chart pinch-to-zoom and pan.
+/// Interactive line chart with manual zoom/pan and a minimap navigator.
 ///
-/// Receives hourly data from Steam. Uses fl_chart's built-in
-/// FlTransformationConfig for smooth zoom/pan. Range chips filter
-/// the data to preset windows.
+/// Zoom/pan is handled via GestureDetector controlling a [_viewStart, _viewEnd]
+/// window (0–1 fractions of the full daily data timeline). The minimap always
+/// shows all data with a viewport rectangle that tracks the visible window.
 class PriceChart extends StatefulWidget {
   final List<PriceHistoryPoint> data;
 
@@ -37,22 +37,29 @@ class PriceChart extends StatefulWidget {
 class _PriceChartState extends State<PriceChart> {
   ChartRange _selectedRange = ChartRange.month;
   int? _touchedIndex;
-  late TransformationController _transformController;
 
   /// Daily-aggregated version of the full dataset.
   late List<PriceHistoryPoint> _dailyData;
 
+  /// Visible window as fractions of the total daily data timeline [0.0, 1.0].
+  double _viewStart = 0.0;
+  double _viewEnd = 1.0;
+
+  // Gesture tracking
+  double _baseViewWidth = 1.0;
+  double _baseViewCenter = 0.5;
+  Offset? _gestureStartFocal;
+  bool _gestureDidMove = false;
+
+
+  Offset? _pointerDownPos;
+  final _chartKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
-    _transformController = TransformationController();
     _dailyData = _aggregateDaily(widget.data);
-  }
-
-  @override
-  void dispose() {
-    _transformController.dispose();
-    super.dispose();
+    _applyRange(_selectedRange);
   }
 
   @override
@@ -60,17 +67,29 @@ class _PriceChartState extends State<PriceChart> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.data != widget.data) {
       _dailyData = _aggregateDaily(widget.data);
+      _applyRange(_selectedRange);
     }
   }
 
-  /// Filter data to the selected time range.
-  List<PriceHistoryPoint> _filterByRange(List<PriceHistoryPoint> data) {
-    if (_selectedRange == ChartRange.all || _selectedRange.days == 0) {
-      return data;
+  /// Set the visible window to show the most recent N days for a range chip.
+  void _applyRange(ChartRange range) {
+    if (range == ChartRange.all || range.days == 0 || _dailyData.length < 2) {
+      _viewStart = 0.0;
+      _viewEnd = 1.0;
+      return;
     }
-    final cutoff =
-        DateTime.now().subtract(Duration(days: _selectedRange.days));
-    return data.where((p) => p.date.isAfter(cutoff)).toList();
+    final allStart = _dailyData.first.date;
+    final allEnd = _dailyData.last.date;
+    final totalHours = allEnd.difference(allStart).inHours.toDouble();
+    if (totalHours <= 0) {
+      _viewStart = 0.0;
+      _viewEnd = 1.0;
+      return;
+    }
+    final rangeHours = range.days * 24.0;
+    final width = (rangeHours / totalHours).clamp(0.0, 1.0);
+    _viewEnd = 1.0;
+    _viewStart = (1.0 - width).clamp(0.0, 1.0);
   }
 
   /// Aggregate hourly points to daily (median price, total volume).
@@ -104,43 +123,187 @@ class _PriceChartState extends State<PriceChart> {
     return daily;
   }
 
-  /// Get display-ready data with appropriate granularity.
-  List<PriceHistoryPoint> _getDisplayData() {
-    final filtered = _filterByRange(widget.data);
-    if (filtered.isEmpty) return filtered;
+  /// Get the data visible in the current window, with hourly/daily auto-switch.
+  List<PriceHistoryPoint> _getVisibleData() {
+    if (_dailyData.isEmpty) return [];
+    if (_dailyData.length < 2) return _dailyData;
 
-    final isShortRange = _selectedRange == ChartRange.week ||
-        _selectedRange == ChartRange.month;
+    final allStart = _dailyData.first.date;
+    final allEnd = _dailyData.last.date;
+    final totalSpan = allEnd.difference(allStart);
+    final visStart = allStart.add(totalSpan * _viewStart);
+    final visEnd = allStart.add(totalSpan * _viewEnd);
+    final visDays = visEnd.difference(visStart).inDays.clamp(1, 9999);
 
-    if (isShortRange) {
-      final firstDate = filtered.first.date;
-      final lastDate = filtered.last.date;
-      final daySpan =
-          lastDate.difference(firstDate).inDays.clamp(1, 9999);
-      final avgTradesPerDay = filtered.length / daySpan;
-
-      if (avgTradesPerDay >= 10) {
-        return filtered;
+    // For short visible spans with high trade volume, use hourly data
+    if (visDays <= 30) {
+      final hourly = widget.data
+          .where(
+              (p) => !p.date.isBefore(visStart) && !p.date.isAfter(visEnd))
+          .toList();
+      if (hourly.isNotEmpty && hourly.length / visDays >= 10) {
+        return hourly;
       }
     }
 
-    // Daily for longer ranges or low volume
-    return _filterByRange(_dailyData);
+    return _dailyData
+        .where(
+            (p) => !p.date.isBefore(visStart) && !p.date.isAfter(visEnd))
+        .toList();
+  }
+
+  double get _chartPixelWidth {
+    final box = _chartKey.currentContext?.findRenderObject() as RenderBox?;
+    return box?.size.width ?? 300;
+  }
+
+  /// Minimum zoom window: allow viewing down to ~6 hours of data.
+  double get _minWindow {
+    if (_dailyData.length < 2) return 0.1;
+    final totalHours =
+        _dailyData.last.date.difference(_dailyData.first.date).inHours;
+    if (totalHours <= 0) return 0.1;
+    return (6.0 / totalHours).clamp(0.001, 0.5);
+  }
+
+  // --- Gesture handlers for main chart zoom/pan ---
+
+  void _onGestureStart(ScaleStartDetails details) {
+    _baseViewWidth = _viewEnd - _viewStart;
+    _baseViewCenter = (_viewStart + _viewEnd) / 2;
+    _gestureStartFocal = details.localFocalPoint;
+    _gestureDidMove = false;
+  }
+
+  void _onGestureUpdate(ScaleUpdateDetails details) {
+    final moved = _gestureStartFocal != null &&
+        (details.localFocalPoint - _gestureStartFocal!).distance > 8;
+    final zooming =
+        details.pointerCount >= 2 && (details.scale - 1.0).abs() > 0.01;
+
+    if (moved || zooming) _gestureDidMove = true;
+    if (!_gestureDidMove) return;
+
+    setState(() {
+      if (details.pointerCount >= 2) {
+        final newWidth =
+            (_baseViewWidth / details.scale).clamp(_minWindow, 1.0);
+        _viewStart =
+            (_baseViewCenter - newWidth / 2).clamp(0.0, 1.0 - newWidth);
+        _viewEnd = _viewStart + newWidth;
+
+      } else {
+        // Single finger: pan
+        final w = _viewEnd - _viewStart;
+        final cw = _chartPixelWidth;
+        if (cw > 0) {
+          final panFrac = -details.focalPointDelta.dx / cw * w;
+          final newStart = (_viewStart + panFrac).clamp(0.0, 1.0 - w);
+          _viewStart = newStart;
+          _viewEnd = newStart + w;
+        }
+      }
+      _touchedIndex = null;
+      _updateSelectedRange();
+    });
+  }
+
+  void _onGestureEnd(ScaleEndDetails details) {
+    // Tap detection is handled by the Listener wrapper
+  }
+
+  /// Auto-switch the selected range chip based on how many days are visible.
+  void _updateSelectedRange() {
+    if (_dailyData.length < 2) return;
+    // Viewing almost everything → All
+    if ((_viewEnd - _viewStart) > 0.95) {
+      _selectedRange = ChartRange.all;
+      return;
+    }
+    final totalDays =
+        _dailyData.last.date.difference(_dailyData.first.date).inDays;
+    if (totalDays <= 0) return;
+    final visDays = ((_viewEnd - _viewStart) * totalDays).round();
+
+    if (visDays <= 10) {
+      _selectedRange = ChartRange.week;
+    } else if (visDays <= 45) {
+      _selectedRange = ChartRange.month;
+    } else if (visDays <= 120) {
+      _selectedRange = ChartRange.threeMonths;
+    } else if (visDays <= 240) {
+      _selectedRange = ChartRange.sixMonths;
+    } else {
+      _selectedRange = ChartRange.year;
+    }
+  }
+
+  void _handleChartTap(Offset localPosition) {
+    final data = _getVisibleData();
+    if (data.isEmpty) return;
+    final cw = _chartPixelWidth;
+    final dataAreaStart = 52.0; // left axis reserved size
+    final dataAreaWidth = cw - dataAreaStart;
+    final dataX = localPosition.dx - dataAreaStart;
+    if (dataX < 0 || dataX > dataAreaWidth || dataAreaWidth <= 0) return;
+    final index = (dataX / dataAreaWidth * (data.length - 1))
+        .round()
+        .clamp(0, data.length - 1);
+    setState(() => _touchedIndex = index);
+  }
+
+  // --- Minimap drag ---
+
+  void _onMinimapDrag(double fraction) {
+    setState(() {
+      final width = _viewEnd - _viewStart;
+      _viewStart = (fraction - width / 2).clamp(0.0, 1.0 - width);
+      _viewEnd = _viewStart + width;
+      _touchedIndex = null;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final data = _getDisplayData();
+    final data = _getVisibleData();
+
+    // Minimap: always show ALL daily data
+    final minimapSpots = <FlSpot>[];
+    for (int i = 0; i < _dailyData.length; i++) {
+      minimapSpots.add(FlSpot(i.toDouble(), _dailyData[i].price));
+    }
+    final allPrices = _dailyData.map((p) => p.price).toList();
+    final allMinPrice =
+        allPrices.isEmpty ? 0.0 : allPrices.reduce(math.min);
+    final allMaxPrice =
+        allPrices.isEmpty ? 1.0 : allPrices.reduce(math.max);
+    final allRange = allMaxPrice - allMinPrice;
+    final allPadding = allRange > 0 ? allRange * 0.1 : allMaxPrice * 0.1;
 
     if (data.isEmpty) {
-      return SizedBox(
-        height: 200,
-        child: Center(
-          child: Text(
-            'No price data for this period',
-            style: TextStyle(color: Colors.grey[600]),
+      return Column(
+        children: [
+          SizedBox(
+            height: 200,
+            child: Center(
+              child: Text('No price data for this period',
+                  style: TextStyle(color: Colors.grey[600])),
+            ),
           ),
-        ),
+          const SizedBox(height: 4),
+          if (minimapSpots.isNotEmpty)
+            _Minimap(
+              spots: minimapSpots,
+              lineColor: Colors.grey,
+              minY: (allMinPrice - allPadding).clamp(0, double.infinity),
+              maxY: allMaxPrice + allPadding,
+              viewStart: _viewStart,
+              viewEnd: _viewEnd,
+              onDrag: _onMinimapDrag,
+            ),
+          const SizedBox(height: 8),
+          _buildRangeChips(),
+        ],
       );
     }
 
@@ -150,8 +313,8 @@ class _PriceChartState extends State<PriceChart> {
     }
 
     final prices = data.map((p) => p.price).toList();
-    final minPrice = prices.reduce((a, b) => a < b ? a : b);
-    final maxPrice = prices.reduce((a, b) => a > b ? a : b);
+    final minPrice = prices.reduce(math.min);
+    final maxPrice = prices.reduce(math.max);
     final priceRange = maxPrice - minPrice;
     final padding = priceRange > 0 ? priceRange * 0.1 : maxPrice * 0.1;
 
@@ -163,13 +326,14 @@ class _PriceChartState extends State<PriceChart> {
     final isPositive = priceChange >= 0;
     final lineColor = isPositive ? Colors.greenAccent : Colors.redAccent;
 
-    final totalDays = widget.data.isEmpty
+    final totalDays = _dailyData.length < 2
         ? 1
-        : widget.data.last.date
-            .difference(widget.data.first.date)
+        : _dailyData.last.date
+            .difference(_dailyData.first.date)
             .inDays
             .clamp(1, 99999);
-    final isHourly = data.length > math.max(_selectedRange.days > 0 ? _selectedRange.days : totalDays, 1) * 1.5;
+    final visDays = ((_viewEnd - _viewStart) * totalDays).clamp(1, 99999);
+    final isHourly = data.length > visDays * 1.5;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -210,356 +374,340 @@ class _PriceChartState extends State<PriceChart> {
         ),
         const SizedBox(height: 12),
 
-        // Chart with native fl_chart zoom/pan
-        SizedBox(
-          height: 200,
-          child: LineChart(
-            LineChartData(
-              gridData: FlGridData(
-                show: true,
-                drawVerticalLine: false,
-                horizontalInterval: priceRange > 0
-                    ? (priceRange / 4).clamp(0.01, double.infinity)
-                    : maxPrice / 4,
-                getDrawingHorizontalLine: (value) => FlLine(
-                  color: Colors.white.withAlpha(10),
-                  strokeWidth: 1,
-                ),
-              ),
-              titlesData: FlTitlesData(
-                topTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false)),
-                rightTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false)),
-                leftTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 52,
-                    getTitlesWidget: (value, meta) {
-                      if (value == meta.min || value == meta.max) {
-                        return const SizedBox.shrink();
-                      }
-                      final label = value >= 1000
-                          ? '\$${(value / 1000).toStringAsFixed(1)}k'
-                          : '\$${value.toStringAsFixed(value >= 100 ? 0 : 2)}';
-                      return Text(
-                        label,
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontSize: 10,
-                        ),
-                      );
-                    },
+        // Main chart with manual zoom/pan + Listener for tap detection
+        Listener(
+          onPointerDown: (e) {
+            _pointerDownPos = e.localPosition;
+            _gestureDidMove = false;
+          },
+          onPointerUp: (e) {
+            if (!_gestureDidMove && _pointerDownPos != null) {
+              _handleChartTap(_pointerDownPos!);
+            }
+            _pointerDownPos = null;
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onScaleStart: _onGestureStart,
+            onScaleUpdate: _onGestureUpdate,
+            onScaleEnd: _onGestureEnd,
+            child: SizedBox(
+            key: _chartKey,
+            height: 200,
+            child: IgnorePointer(
+              child: LineChart(
+              LineChartData(
+                gridData: FlGridData(
+                  show: true,
+                  drawVerticalLine: false,
+                  horizontalInterval: priceRange > 0
+                      ? (priceRange / 4).clamp(0.01, double.infinity)
+                      : maxPrice / 4,
+                  getDrawingHorizontalLine: (value) => FlLine(
+                    color: Colors.white.withAlpha(10),
+                    strokeWidth: 1,
                   ),
                 ),
-                bottomTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 24,
-                    interval: (data.length / 4)
-                        .ceilToDouble()
-                        .clamp(1, double.infinity),
-                    getTitlesWidget: (value, meta) {
-                      final index = value.toInt();
-                      if (index < 0 || index >= data.length) {
-                        return const SizedBox.shrink();
-                      }
-                      final date = data[index].date;
-                      final DateFormat format;
-                      if (isHourly && (_selectedRange.days <= 7)) {
-                        format = DateFormat('d/M HH:mm');
-                      } else if (_selectedRange.days <= 90 &&
-                          _selectedRange.days > 0) {
-                        format = DateFormat('MMM d');
-                      } else {
-                        format = DateFormat('MMM yy');
-                      }
-                      return Text(
-                        format.format(date),
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontSize: 10,
-                        ),
-                      );
-                    },
+                titlesData: FlTitlesData(
+                  topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false)),
+                  rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false)),
+                  leftTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 52,
+                      getTitlesWidget: (value, meta) {
+                        if (value == meta.min || value == meta.max) {
+                          return const SizedBox.shrink();
+                        }
+                        final label = value >= 1000
+                            ? '\$${(value / 1000).toStringAsFixed(1)}k'
+                            : '\$${value.toStringAsFixed(value >= 100 ? 0 : 2)}';
+                        return Text(
+                          label,
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 10,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      reservedSize: 24,
+                      interval: (data.length / 4)
+                          .ceilToDouble()
+                          .clamp(1, double.infinity),
+                      getTitlesWidget: (value, meta) {
+                        final index = value.toInt();
+                        if (index < 0 || index >= data.length) {
+                          return const SizedBox.shrink();
+                        }
+                        final date = data[index].date;
+                        final DateFormat format;
+                        if (isHourly && visDays <= 7) {
+                          format = DateFormat('d/M HH:mm');
+                        } else if (visDays <= 90) {
+                          format = DateFormat('MMM d');
+                        } else {
+                          format = DateFormat('MMM yy');
+                        }
+                        return Text(
+                          format.format(date),
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 10,
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
-              ),
-              borderData: FlBorderData(show: false),
-              minY: (minPrice - padding).clamp(0, double.infinity),
-              maxY: maxPrice + padding,
-              extraLinesData: ExtraLinesData(
-                verticalLines: _touchedIndex != null &&
+                borderData: FlBorderData(show: false),
+                minY: (minPrice - padding).clamp(0, double.infinity),
+                maxY: maxPrice + padding,
+                extraLinesData: ExtraLinesData(
+                  verticalLines: _touchedIndex != null &&
+                          _touchedIndex! >= 0 &&
+                          _touchedIndex! < data.length
+                      ? [
+                          VerticalLine(
+                            x: _touchedIndex!.toDouble(),
+                            color: Colors.white.withAlpha(40),
+                            strokeWidth: 1,
+                            dashArray: [4, 4],
+                          ),
+                        ]
+                      : [],
+                ),
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: spots,
+                    isCurved: true,
+                    curveSmoothness: 0.2,
+                    color: lineColor,
+                    barWidth: 2,
+                    isStrokeCapRound: true,
+                    dotData: const FlDotData(show: false),
+                    belowBarData: BarAreaData(
+                      show: true,
+                      color: lineColor.withAlpha(20),
+                    ),
+                  ),
+                ],
+                showingTooltipIndicators: _touchedIndex != null &&
                         _touchedIndex! >= 0 &&
                         _touchedIndex! < data.length
                     ? [
-                        VerticalLine(
-                          x: _touchedIndex!.toDouble(),
-                          color: Colors.white.withAlpha(40),
-                          strokeWidth: 1,
-                          dashArray: [4, 4],
-                        ),
+                        ShowingTooltipIndicators([
+                          LineBarSpot(
+                            LineChartBarData(spots: spots),
+                            0,
+                            spots[_touchedIndex!],
+                          ),
+                        ]),
                       ]
                     : [],
-              ),
-              lineBarsData: [
-                LineChartBarData(
-                  spots: spots,
-                  isCurved: true,
-                  curveSmoothness: 0.2,
-                  color: lineColor,
-                  barWidth: 2,
-                  isStrokeCapRound: true,
-                  dotData: const FlDotData(show: false),
-                  belowBarData: BarAreaData(
-                    show: true,
-                    color: lineColor.withAlpha(20),
+                lineTouchData: LineTouchData(
+                  enabled: false,
+                  touchTooltipData: LineTouchTooltipData(
+                    getTooltipColor: (_) => const Color(0xFF25253E),
+                    getTooltipItems: (touchedSpots) {
+                      return touchedSpots.map((spot) {
+                        final index = spot.x.toInt();
+                        if (index < 0 || index >= data.length) return null;
+                        final point = data[index];
+                        final dateFormat = isHourly
+                            ? DateFormat('MMM d, yyyy HH:mm')
+                            : DateFormat('MMM d, yyyy');
+                        return LineTooltipItem(
+                          '\$${point.price.toStringAsFixed(2)}\n${dateFormat.format(point.date)}\n${point.volume} sold',
+                          const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        );
+                      }).toList();
+                    },
                   ),
-                ),
-              ],
-              showingTooltipIndicators: _touchedIndex != null &&
-                      _touchedIndex! >= 0 &&
-                      _touchedIndex! < data.length
-                  ? [
-                      ShowingTooltipIndicators([
-                        LineBarSpot(
-                          LineChartBarData(spots: spots),
-                          0,
-                          spots[_touchedIndex!],
-                        ),
-                      ]),
-                    ]
-                  : [],
-              lineTouchData: LineTouchData(
-                handleBuiltInTouches: false,
-                touchCallback: (event, response) {
-                  if (event is FlTapUpEvent &&
-                      response?.lineBarSpots != null &&
-                      response!.lineBarSpots!.isNotEmpty) {
-                    setState(() {
-                      _touchedIndex =
-                          response.lineBarSpots!.first.x.toInt();
-                    });
-                  }
-                },
-                touchTooltipData: LineTouchTooltipData(
-                  getTooltipColor: (_) => const Color(0xFF25253E),
-                  getTooltipItems: (touchedSpots) {
-                    return touchedSpots.map((spot) {
-                      final index = spot.x.toInt();
-                      if (index < 0 || index >= data.length) return null;
-                      final point = data[index];
-                      final dateFormat = isHourly
-                          ? DateFormat('MMM d, yyyy HH:mm')
-                          : DateFormat('MMM d, yyyy');
-                      return LineTooltipItem(
-                        '\$${point.price.toStringAsFixed(2)}\n${dateFormat.format(point.date)}\n${point.volume} sold',
-                        const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      );
-                    }).toList();
-                  },
                 ),
               ),
             ),
-            transformationConfig: FlTransformationConfig(
-              scaleAxis: FlScaleAxis.horizontal,
-              minScale: 1.0,
-              maxScale: 25.0,
-              transformationController: _transformController,
             ),
           ),
         ),
+        ),
         const SizedBox(height: 4),
 
-        // Minimap — always visible, tap to navigate when zoomed
+        // Minimap — always shows ALL data, viewport tracks visible window
         _Minimap(
-          spots: spots,
+          spots: minimapSpots,
           lineColor: lineColor,
-          minY: (minPrice - padding).clamp(0, double.infinity),
-          maxY: maxPrice + padding,
-          transformController: _transformController,
+          minY: (allMinPrice - allPadding).clamp(0, double.infinity),
+          maxY: allMaxPrice + allPadding,
+          viewStart: _viewStart,
+          viewEnd: _viewEnd,
+          onDrag: _onMinimapDrag,
         ),
         const SizedBox(height: 8),
 
         // Range selector chips
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: ChartRange.values.map((range) {
-            final isSelected = range == _selectedRange;
-            return GestureDetector(
-              onTap: () {
-                // Reset zoom when changing range
-                _transformController.value = Matrix4.identity();
-                setState(() {
-                  _selectedRange = range;
-                  _touchedIndex = null;
-                });
-              },
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? Colors.blueAccent.withAlpha(40)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: isSelected
-                        ? Colors.blueAccent
-                        : Colors.grey.withAlpha(50),
-                  ),
-                ),
-                child: Text(
-                  range.label,
-                  style: TextStyle(
-                    color: isSelected
-                        ? Colors.blueAccent[100]
-                        : Colors.grey[500],
-                    fontSize: 12,
-                    fontWeight:
-                        isSelected ? FontWeight.w600 : FontWeight.w400,
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
+        _buildRangeChips(),
       ],
+    );
+  }
+
+  Widget _buildRangeChips() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: ChartRange.values.map((range) {
+        final isSelected = range == _selectedRange;
+        return GestureDetector(
+          onTap: () {
+            setState(() {
+              _selectedRange = range;
+              _applyRange(range);
+              _touchedIndex = null;
+            });
+          },
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Colors.blueAccent.withAlpha(40)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isSelected
+                    ? Colors.blueAccent
+                    : Colors.grey.withAlpha(50),
+              ),
+            ),
+            child: Text(
+              range.label,
+              style: TextStyle(
+                color: isSelected
+                    ? Colors.blueAccent[100]
+                    : Colors.grey[500],
+                fontSize: 12,
+                fontWeight:
+                    isSelected ? FontWeight.w600 : FontWeight.w400,
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }
 
-/// A small overview chart that's always visible.
-/// When zoomed, shows a viewport rectangle and supports tap-to-navigate.
+/// Small overview chart showing ALL data with a draggable viewport indicator.
 class _Minimap extends StatelessWidget {
   final List<FlSpot> spots;
   final Color lineColor;
   final double minY;
   final double maxY;
-  final TransformationController transformController;
+  final double viewStart;
+  final double viewEnd;
+  final ValueChanged<double>? onDrag;
 
   const _Minimap({
     required this.spots,
     required this.lineColor,
     required this.minY,
     required this.maxY,
-    required this.transformController,
+    required this.viewStart,
+    required this.viewEnd,
+    this.onDrag,
   });
-
-  void _onTap(double tapFraction) {
-    final matrix = transformController.value;
-    final scaleX = matrix.getMaxScaleOnAxis();
-    if (scaleX <= 1.05) return; // not zoomed, nothing to navigate
-
-    // Center the viewport on the tapped position
-    final viewWidth = 1.0 / scaleX;
-    final targetStart = (tapFraction - viewWidth / 2).clamp(0.0, 1.0 - viewWidth);
-    final translateX = -targetStart * scaleX;
-
-    // Keep the same horizontal-only scale, just change translation
-    final newMatrix = Matrix4.identity()
-      ..setEntry(0, 0, scaleX)
-      ..setTranslationRaw(translateX, 0, 0);
-    transformController.value = newMatrix;
-  }
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: transformController,
-      builder: (context, _) {
-        final matrix = transformController.value;
-        final scaleX = matrix.getMaxScaleOnAxis();
-        final isZoomed = scaleX > 1.05;
+    final showViewport = (viewEnd - viewStart) < 0.99;
 
-        final translateX = matrix.getTranslation().x;
-        final viewStart =
-            (-translateX / scaleX).clamp(0.0, 1.0 - 1.0 / scaleX);
-        final viewWidth = (1.0 / scaleX).clamp(0.0, 1.0);
-
-        return GestureDetector(
-          onTapDown: (details) {
-            final box = context.findRenderObject() as RenderBox?;
-            if (box == null) return;
-            final fraction = details.localPosition.dx / box.size.width;
-            _onTap(fraction.clamp(0.0, 1.0));
-          },
-          onHorizontalDragUpdate: (details) {
-            final box = context.findRenderObject() as RenderBox?;
-            if (box == null) return;
-            final fraction = details.localPosition.dx / box.size.width;
-            _onTap(fraction.clamp(0.0, 1.0));
-          },
-          child: SizedBox(
-            height: 32,
-            child: Stack(
-              children: [
-                // Mini line chart
-                Positioned.fill(
-                  child: LineChart(
-                    LineChartData(
-                      gridData: const FlGridData(show: false),
-                      titlesData: const FlTitlesData(show: false),
-                      borderData: FlBorderData(
-                        show: true,
-                        border:
-                            Border.all(color: Colors.white.withAlpha(15)),
-                      ),
-                      minY: minY,
-                      maxY: maxY,
-                      lineBarsData: [
-                        LineChartBarData(
-                          spots: spots,
-                          isCurved: true,
-                          curveSmoothness: 0.2,
-                          color: lineColor.withAlpha(80),
-                          barWidth: 1,
-                          dotData: const FlDotData(show: false),
+    return GestureDetector(
+      onTapDown: (details) {
+        if (onDrag == null) return;
+        final box = context.findRenderObject() as RenderBox?;
+        if (box == null) return;
+        onDrag!(
+            (details.localPosition.dx / box.size.width).clamp(0.0, 1.0));
+      },
+      onHorizontalDragUpdate: (details) {
+        if (onDrag == null) return;
+        final box = context.findRenderObject() as RenderBox?;
+        if (box == null) return;
+        onDrag!(
+            (details.localPosition.dx / box.size.width).clamp(0.0, 1.0));
+      },
+      child: SizedBox(
+        height: 32,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: LineChart(
+                LineChartData(
+                  gridData: const FlGridData(show: false),
+                  titlesData: const FlTitlesData(show: false),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(color: Colors.white.withAlpha(15)),
+                  ),
+                  minY: minY,
+                  maxY: maxY,
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: spots,
+                      isCurved: true,
+                      curveSmoothness: 0.2,
+                      color: lineColor.withAlpha(80),
+                      barWidth: 1,
+                      dotData: const FlDotData(show: false),
+                    ),
+                  ],
+                  lineTouchData: const LineTouchData(enabled: false),
+                ),
+              ),
+            ),
+            if (showViewport)
+              Positioned.fill(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final left = viewStart * constraints.maxWidth;
+                    final width =
+                        ((viewEnd - viewStart) * constraints.maxWidth)
+                            .clamp(4.0, constraints.maxWidth);
+                    return Stack(
+                      children: [
+                        Positioned(
+                          left: left,
+                          width: width,
+                          top: 0,
+                          bottom: 0,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.blueAccent.withAlpha(25),
+                              border: Border.all(
+                                color: Colors.blueAccent.withAlpha(80),
+                                width: 1,
+                              ),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
                         ),
                       ],
-                      lineTouchData: const LineTouchData(enabled: false),
-                    ),
-                  ),
+                    );
+                  },
                 ),
-                // Viewport indicator (only when zoomed)
-                if (isZoomed)
-                  Positioned.fill(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final left = viewStart * constraints.maxWidth;
-                        final width = viewWidth * constraints.maxWidth;
-                        return Stack(
-                          children: [
-                            Positioned(
-                              left: left,
-                              width: width,
-                              top: 0,
-                              bottom: 0,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.blueAccent.withAlpha(25),
-                                  border: Border.all(
-                                    color: Colors.blueAccent.withAlpha(80),
-                                    width: 1,
-                                  ),
-                                  borderRadius: BorderRadius.circular(2),
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        );
-      },
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -181,6 +181,8 @@ class ItemDetailScreen extends ConsumerWidget {
                   if (item.wear != null) _DetailRow(label: 'Wear', value: item.wear!),
                   if (item.floatValue != null)
                     _DetailRow(label: 'Float', value: item.floatValue!.toStringAsFixed(6)),
+                  if (item.collection != null && item.collection!.isNotEmpty)
+                    _DetailRow(label: 'Collection', value: item.collection!),
                   _DetailRow(label: 'Quantity', value: '${item.quantity}'),
                   _DetailRow(label: 'Location', value: item.location),
                   if (item.quantity > 1)
