@@ -506,17 +506,28 @@ class _LastUpdatedLabelState extends State<_LastUpdatedLabel> {
       if (!file.existsSync()) return;
       final ts = int.tryParse(await file.readAsString());
       if (ts == null) return;
-      final age = DateTime.now().millisecondsSinceEpoch - ts;
-      final minutes = age ~/ 60000;
+
+      final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final yesterday = today.subtract(const Duration(days: 1));
+      final dtDay = DateTime(dt.year, dt.month, dt.day);
+
+      final hour = dt.hour;
+      final minute = dt.minute.toString().padLeft(2, '0');
+      final ampm = hour >= 12 ? 'PM' : 'AM';
+      final h = hour % 12 == 0 ? 12 : hour % 12;
+      final timeStr = '$h:$minute $ampm';
+
       final String text;
-      if (minutes < 1) {
-        text = 'Prices updated just now';
-      } else if (minutes < 60) {
-        text = 'Prices updated ${minutes}m ago';
-      } else if (minutes < 1440) {
-        text = 'Prices updated ${minutes ~/ 60}h ago';
+      if (dtDay == today) {
+        text = 'Prices updated today at $timeStr';
+      } else if (dtDay == yesterday) {
+        text = 'Prices updated yesterday at $timeStr';
       } else {
-        text = 'Prices updated ${minutes ~/ 1440}d ago';
+        final months = ['Jan','Feb','Mar','Apr','May','Jun',
+                        'Jul','Aug','Sep','Oct','Nov','Dec'];
+        text = 'Prices updated ${months[dt.month - 1]} ${dt.day} at $timeStr';
       }
       if (mounted) setState(() => _label = text);
     } catch (_) {}

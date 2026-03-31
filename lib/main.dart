@@ -9,6 +9,17 @@ import 'background/price_refresh_task.dart';
 import 'firebase_options.dart';
 import 'theme/app_theme.dart';
 
+/// Returns the duration until the next 6-hour slot: 12 AM, 6 AM, 12 PM, 6 PM.
+Duration _delayUntilNextSlot() {
+  final now = DateTime.now();
+  for (final hour in [0, 6, 12, 18]) {
+    final slot = DateTime(now.year, now.month, now.day, hour);
+    if (slot.isAfter(now)) return slot.difference(now);
+  }
+  // All slots today have passed — next is midnight tomorrow
+  return DateTime(now.year, now.month, now.day + 1).difference(now);
+}
+
 /// Called by WorkManager in a background isolate — must be top-level.
 @pragma('vm:entry-point')
 void callbackDispatcher() {
@@ -28,8 +39,9 @@ void main() async {
     'cs2-price-refresh',
     'priceRefreshTask',
     frequency: const Duration(hours: 6),
+    initialDelay: _delayUntilNextSlot(),
     constraints: Constraints(networkType: NetworkType.connected),
-    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
   );
 
   // Initialize Firebase — wrapped in try/catch so the app works
