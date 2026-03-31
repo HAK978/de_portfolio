@@ -20,6 +20,15 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Auto-refresh prices on app open if last fetch was >24h ago
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(priceFetchProvider.notifier).autoRefreshIfStale();
+    });
+  }
+
   Future<void> _openSteamLogin(BuildContext context, WidgetRef ref) async {
     final result = await Navigator.of(context).push<SteamLoginResult>(
       MaterialPageRoute(builder: (_) => const SteamLoginScreen()),

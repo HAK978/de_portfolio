@@ -9,6 +9,7 @@ class StorageUnit {
   final String name; // user-assigned label like "Cases & Keys"
   final int itemCount;
   final double totalValue;
+  final double totalCsfloatValue;
   final List<CS2Item> items;
 
   const StorageUnit({
@@ -16,6 +17,7 @@ class StorageUnit {
     required this.name,
     required this.itemCount,
     required this.totalValue,
+    this.totalCsfloatValue = 0.0,
     required this.items,
   });
 }

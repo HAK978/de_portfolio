@@ -140,10 +140,9 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
       },
       onDone: () {
         debugPrint('Price fetch complete: ${state.fetched}/${state.total}');
-        // Persist once at the end — writes cache + syncs Firestore
         ref.read(inventoryProvider.notifier).persistCurrentState();
-        // Sync prices to shared Firestore collection (for future spike alerts)
         _syncPricesToFirestore(lastPrices);
+        _saveLastFetchTimestamp();
         state = state.copyWith(isFetching: false);
         _subscription = null;
       },
@@ -175,6 +174,34 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
     _subscription?.cancel();
     _subscription = null;
     state = state.copyWith(isFetching: false);
+  }
+
+  /// Auto-fetches prices if the last fetch was more than 24 hours ago.
+  Future<void> autoRefreshIfStale() async {
+    if (state.isFetching) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/last_price_fetch.txt');
+      if (file.existsSync()) {
+        final ts = int.tryParse(await file.readAsString()) ?? 0;
+        final age = DateTime.now().millisecondsSinceEpoch - ts;
+        if (age < const Duration(hours: 24).inMilliseconds) return;
+      }
+      debugPrint('[Prices] Cache stale — auto-refreshing inventory prices');
+      fetchPrices();
+    } catch (e) {
+      debugPrint('[Prices] Auto-refresh check failed: $e');
+    }
+  }
+
+  /// Saves the current timestamp as the last fetch time.
+  static Future<void> _saveLastFetchTimestamp() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/last_price_fetch.txt');
+      await file.writeAsString(
+          DateTime.now().millisecondsSinceEpoch.toString());
+    } catch (_) {}
   }
 }
 

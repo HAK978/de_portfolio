@@ -568,10 +568,52 @@ class _StorageUnitCard extends StatelessWidget {
           unit.name,
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
-        subtitle: Text(
-          '${unit.itemCount} items'
-          '${unit.totalValue > 0 ? ' \u2022 ${currencyFormat.format(unit.totalValue)}' : ''}',
-          style: TextStyle(color: Colors.grey[400], fontSize: 13),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${unit.itemCount} items',
+              style: TextStyle(color: Colors.grey[400], fontSize: 12),
+            ),
+            if (unit.totalValue > 0 || unit.totalCsfloatValue > 0)
+              const SizedBox(height: 2),
+            if (unit.totalValue > 0 || unit.totalCsfloatValue > 0)
+              Row(
+                children: [
+                  if (unit.totalValue > 0) ...[
+                    Text(
+                      'Steam ',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                    ),
+                    Text(
+                      currencyFormat.format(unit.totalValue),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                  if (unit.totalValue > 0 && unit.totalCsfloatValue > 0)
+                    Text('  ·  ',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+                  if (unit.totalCsfloatValue > 0) ...[
+                    Text(
+                      'CSFloat ',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                    ),
+                    Text(
+                      currencyFormat.format(unit.totalCsfloatValue),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+          ],
         ),
         onExpansionChanged: (expanded) {
           if (expanded) onExpand();

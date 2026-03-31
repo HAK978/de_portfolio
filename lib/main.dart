@@ -2,14 +2,35 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:workmanager/workmanager.dart';
 
 import 'app.dart';
+import 'background/price_refresh_task.dart';
 import 'firebase_options.dart';
 import 'theme/app_theme.dart';
+
+/// Called by WorkManager in a background isolate — must be top-level.
+@pragma('vm:entry-point')
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) async {
+    WidgetsFlutterBinding.ensureInitialized();
+    return runPriceRefreshBackground();
+  });
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   WakelockPlus.enable();
+
+  // Register the 6-hour background price refresh
+  await Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
+  await Workmanager().registerPeriodicTask(
+    'cs2-price-refresh',
+    'priceRefreshTask',
+    frequency: const Duration(hours: 6),
+    constraints: Constraints(networkType: NetworkType.connected),
+    existingWorkPolicy: ExistingWorkPolicy.keep,
+  );
 
   // Initialize Firebase — wrapped in try/catch so the app works
   // even if Firebase isn't configured yet. Once you run

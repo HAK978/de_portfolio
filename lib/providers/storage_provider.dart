@@ -197,12 +197,15 @@ class StorageNotifier extends Notifier<StorageState> {
         final items = cached.values.toList();
         final totalValue = items.fold(
             0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+        final totalCsfloatValue = items.fold(
+            0.0, (sum, item) => sum + ((item.csfloatPrice ?? 0) * item.quantity));
 
         units.add(StorageUnit(
           id: id,
           name: name,
           itemCount: itemCount,
           totalValue: totalValue,
+          totalCsfloatValue: totalCsfloatValue,
           items: items,
         ));
       }
@@ -254,6 +257,7 @@ class StorageNotifier extends Notifier<StorageState> {
           name: c.name,
           itemCount: c.itemCount,
           totalValue: existing?.totalValue ?? 0,
+          totalCsfloatValue: existing?.totalCsfloatValue ?? 0,
           items: existing?.items ?? [],
         );
       }).toList();
@@ -288,6 +292,8 @@ class StorageNotifier extends Notifier<StorageState> {
 
       final totalValue = withCached.fold(
           0.0, (sum, item) => sum + (item.currentPrice * item.quantity));
+      final totalCsfloatValue = withCached.fold(
+          0.0, (sum, item) => sum + ((item.csfloatPrice ?? 0) * item.quantity));
 
       final updatedUnits = state.units.map((unit) {
         if (unit.id == casketId) {
@@ -296,6 +302,7 @@ class StorageNotifier extends Notifier<StorageState> {
             name: unit.name,
             itemCount: unit.itemCount,
             totalValue: totalValue,
+            totalCsfloatValue: totalCsfloatValue,
             items: withCached,
           );
         }
@@ -307,10 +314,33 @@ class StorageNotifier extends Notifier<StorageState> {
 
       // Save to cache so collection data persists across restarts
       await _saveCache(casketId, withCached);
+
+      // Auto-refresh prices if cache is older than 24 hours
+      if (await _isCacheStale(casketId)) {
+        debugPrint('[$casketId] Cache is stale — auto-refreshing prices');
+        fetchAllPrices(casketId);
+      }
     } catch (e) {
       debugPrint('Failed to fetch contents for $casketId: $e');
       final newLoading = {...state.loadingCaskets}..remove(casketId);
       state = state.copyWith(loadingCaskets: newLoading, error: e.toString());
+    }
+  }
+
+  /// Returns true if the stored cache is older than 24 hours.
+  Future<bool> _isCacheStale(String casketId) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_cachePrefix$casketId.json');
+      if (!file.existsSync()) return false; // no cache = no items = don't auto-fetch
+      final content = await file.readAsString();
+      final data = jsonDecode(content) as Map<String, dynamic>;
+      final ts = data['timestamp'] as int?;
+      if (ts == null) return false;
+      final age = DateTime.now().millisecondsSinceEpoch - ts;
+      return age > const Duration(hours: 24).inMilliseconds;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -446,7 +476,7 @@ class StorageNotifier extends Notifier<StorageState> {
           final price = prices[item.marketHashName];
           if (price == null) return item;
           return item.copyWith(csfloatPrice: price);
-        });
+        }, recalcValue: true);
 
         state = state.copyWith(
           pricingProgress: {
@@ -483,6 +513,9 @@ class StorageNotifier extends Notifier<StorageState> {
     final totalValue = recalcValue
         ? updatedItems.fold(0.0, (sum, item) => sum + (item.currentPrice * item.quantity))
         : currentUnit.totalValue;
+    final totalCsfloatValue = recalcValue
+        ? updatedItems.fold(0.0, (sum, item) => sum + ((item.csfloatPrice ?? 0) * item.quantity))
+        : currentUnit.totalCsfloatValue;
 
     final updatedUnits = state.units.map((unit) {
       if (unit.id == casketId) {
@@ -491,6 +524,7 @@ class StorageNotifier extends Notifier<StorageState> {
           name: unit.name,
           itemCount: unit.itemCount,
           totalValue: totalValue,
+          totalCsfloatValue: totalCsfloatValue,
           items: updatedItems,
         );
       }
