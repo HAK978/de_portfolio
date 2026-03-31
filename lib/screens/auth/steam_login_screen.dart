@@ -25,7 +25,8 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
   late final WebViewController _controller;
   bool _isLoading = true;
   bool _wasBackgrounded = false;
-  bool _redirectedToProfile = false;
+  bool _navigatedToProfile = false; // true after we redirect to steamcommunity
+  bool _extracting = false;
 
   @override
   void initState() {
@@ -68,55 +69,81 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
     }
     if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
-      debugPrint('Resumed from background, extracting...');
-      _extractAndClose();
+      _onResumedFromBackground();
     }
   }
 
-  /// After any page finishes loading, check if we're past the login page.
+  /// Check current URL when returning from background.
+  /// Only extract if the WebView already redirected past the login page.
+  /// If still on the login/guard page, do nothing — let the user continue.
+  Future<void> _onResumedFromBackground() async {
+    await Future.delayed(const Duration(milliseconds: 500));
+    final url = await _controller.currentUrl() ?? '';
+    debugPrint('Resumed, current URL: $url');
+
+    if (!url.contains('/login') && !url.contains('/signin') &&
+        (url.contains('steampowered.com') || url.contains('steamcommunity.com'))) {
+      debugPrint('Past login on resume, going to profile...');
+      _goToProfileAndExtract();
+    } else {
+      debugPrint('Still on login/guard page, waiting for user to continue.');
+    }
+  }
+
+  /// After any page finishes loading, check if we're past login.
   void _checkForLogin(String url) {
-    if (_redirectedToProfile) {
-      // Already redirected — extract data now
+    debugPrint('PAGE FINISHED: $url');
+
+    // If we already navigated to steamcommunity — extract from here
+    if (_navigatedToProfile) {
       if (url.contains('steamcommunity.com')) {
-        _extract(url).then((result) {
-          if (result != null && mounted) {
-            Navigator.of(context).pop(result);
-          }
-        });
+        _tryExtract(url);
       }
       return;
     }
 
-    if (url.contains('/login')) return;
+    // Still on login/signin/guard pages — not done yet
+    if (url.contains('/login') || url.contains('/signin')) return;
 
+    // Past login on any Steam domain — navigate to steamcommunity once
+    // to ensure the steamLoginSecure cookie is accessible
     final isSteam = url.contains('steampowered.com') ||
         url.contains('steamcommunity.com');
     if (!isSteam) return;
 
-    debugPrint('Login detected, navigating to profile...');
-    _redirectedToProfile = true;
+    debugPrint('Login detected — navigating to steamcommunity for cookie...');
+    _navigatedToProfile = true;
     _controller.loadRequest(
-      Uri.parse('https://steamcommunity.com/my/profile'),
-    );
+        Uri.parse('https://steamcommunity.com/my/profile'));
   }
 
-  /// Navigate to community profile, read cookie + Steam ID, close.
-  Future<void> _extractAndClose() async {
+  /// Attempt extraction once; no-op if already in progress.
+  Future<void> _tryExtract(String url) async {
+    if (_extracting) return;
+    _extracting = true;
     try {
-      await _controller.loadRequest(
-        Uri.parse('https://steamcommunity.com/my/profile'),
-      );
-      await Future.delayed(const Duration(seconds: 3));
-
-      final url = await _controller.currentUrl() ?? '';
       final result = await _extract(url);
-
       if (result != null && mounted) {
         Navigator.of(context).pop(result);
       }
-    } catch (e) {
-      debugPrint('Extract error: $e');
+    } finally {
+      _extracting = false;
     }
+  }
+
+  /// Navigate to steamcommunity then extract once the page loads.
+  /// Used by Done button and resume-from-background.
+  Future<void> _goToProfileAndExtract() async {
+    if (_navigatedToProfile) {
+      // Already there or navigating — just try extraction now
+      final url = await _controller.currentUrl() ?? '';
+      _tryExtract(url);
+      return;
+    }
+    _navigatedToProfile = true;
+    _controller.loadRequest(
+        Uri.parse('https://steamcommunity.com/my/profile'));
+    // onPageFinished will call _tryExtract once the page loads
   }
 
   /// Platform channel to read HttpOnly cookies from Android's native CookieManager.
@@ -202,7 +229,7 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
         ),
         actions: [
           TextButton(
-            onPressed: _extractAndClose,
+            onPressed: _goToProfileAndExtract,
             child: const Text('Done'),
           ),
         ],

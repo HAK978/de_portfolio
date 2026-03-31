@@ -95,6 +95,16 @@ csgo.on('connectedToGC', () => {
 csgo.on('disconnectedFromGC', (reason) => {
   console.log(`[GC] Disconnected: ${reason}`);
   isGCConnected = false;
+
+  // Re-trigger CS2 play to prompt GC reconnection, if Steam session is alive
+  if (isLoggedIn) {
+    setTimeout(() => {
+      if (isLoggedIn && !isGCConnected) {
+        console.log('[GC] Attempting reconnect by re-sending gamesPlayed...');
+        user.gamesPlayed([730], true);
+      }
+    }, 10000);
+  }
 });
 
 // ── Helper: wait for GC connection ────────────────────────
