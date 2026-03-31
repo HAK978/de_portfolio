@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../../models/cs2_item.dart';
 import '../../providers/auth_provider.dart';
@@ -244,7 +247,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onFetch: () => ref.read(csfloatFetchProvider.notifier).fetchPrices(),
             onCancel: () => ref.read(csfloatFetchProvider.notifier).cancel(),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 4),
+          const _LastUpdatedLabel(),
+          const SizedBox(height: 20),
 
           if (topGainers.isNotEmpty) ...[
             _SectionHeader(
@@ -474,6 +479,55 @@ class _SectionHeader extends StatelessWidget {
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ],
+    );
+  }
+}
+
+class _LastUpdatedLabel extends StatefulWidget {
+  const _LastUpdatedLabel();
+
+  @override
+  State<_LastUpdatedLabel> createState() => _LastUpdatedLabelState();
+}
+
+class _LastUpdatedLabelState extends State<_LastUpdatedLabel> {
+  String _label = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/last_price_fetch.txt');
+      if (!file.existsSync()) return;
+      final ts = int.tryParse(await file.readAsString());
+      if (ts == null) return;
+      final age = DateTime.now().millisecondsSinceEpoch - ts;
+      final minutes = age ~/ 60000;
+      final String text;
+      if (minutes < 1) {
+        text = 'Prices updated just now';
+      } else if (minutes < 60) {
+        text = 'Prices updated ${minutes}m ago';
+      } else if (minutes < 1440) {
+        text = 'Prices updated ${minutes ~/ 60}h ago';
+      } else {
+        text = 'Prices updated ${minutes ~/ 1440}d ago';
+      }
+      if (mounted) setState(() => _label = text);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_label.isEmpty) return const SizedBox.shrink();
+    return Text(
+      _label,
+      style: TextStyle(color: Colors.grey[600], fontSize: 11),
     );
   }
 }
