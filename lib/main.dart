@@ -23,13 +23,13 @@ void main() async {
   WakelockPlus.enable();
 
   // Register the 6-hour background price refresh
-  await Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
+  await Workmanager().initialize(callbackDispatcher);
   await Workmanager().registerPeriodicTask(
     'cs2-price-refresh',
     'priceRefreshTask',
     frequency: const Duration(hours: 6),
     constraints: Constraints(networkType: NetworkType.connected),
-    existingWorkPolicy: ExistingWorkPolicy.keep,
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
   );
 
   // Initialize Firebase — wrapped in try/catch so the app works
