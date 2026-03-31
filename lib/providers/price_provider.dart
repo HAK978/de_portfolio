@@ -142,7 +142,7 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
         debugPrint('Price fetch complete: ${state.fetched}/${state.total}');
         ref.read(inventoryProvider.notifier).persistCurrentState();
         _syncPricesToFirestore(lastPrices);
-        _saveLastFetchTimestamp();
+        saveLastPriceFetchTimestamp();
         state = state.copyWith(isFetching: false);
         _subscription = null;
       },
@@ -194,15 +194,16 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
     }
   }
 
-  /// Saves the current timestamp as the last fetch time.
-  static Future<void> _saveLastFetchTimestamp() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/last_price_fetch.txt');
-      await file.writeAsString(
-          DateTime.now().millisecondsSinceEpoch.toString());
-    } catch (_) {}
-  }
+}
+
+/// Saves the current time as the last price fetch timestamp.
+/// Called by both inventory and storage price fetches.
+Future<void> saveLastPriceFetchTimestamp() async {
+  try {
+    final dir = await getApplicationDocumentsDirectory();
+    await File('${dir.path}/last_price_fetch.txt')
+        .writeAsString(DateTime.now().millisecondsSinceEpoch.toString());
+  } catch (_) {}
 }
 
 // ── CSFloat pricing ─────────────────────────────────────────

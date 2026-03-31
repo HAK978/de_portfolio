@@ -372,6 +372,7 @@ class StorageNotifier extends Notifier<StorageState> {
       _fetchMarketData(casketId, unit.items),
       _fetchCsfloatData(casketId, unit.items),
     ]);
+    saveLastPriceFetchTimestamp();
   }
 
   /// Fetches prices and image URLs from Steam Market.
