@@ -41,7 +41,7 @@ void main() async {
     frequency: const Duration(hours: 6),
     initialDelay: _delayUntilNextSlot(),
     constraints: Constraints(networkType: NetworkType.connected),
-    existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
   );
 
   // Initialize Firebase — wrapped in try/catch so the app works

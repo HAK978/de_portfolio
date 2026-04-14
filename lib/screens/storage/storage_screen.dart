@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import '../../models/cs2_collections.dart';
 import '../../models/cs2_item.dart';
 import '../../models/storage_unit.dart';
+import '../../providers/price_provider.dart';
 import '../../providers/storage_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/item_card.dart';
@@ -223,6 +224,7 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   Widget build(BuildContext context) {
     final storage = ref.watch(storageProvider);
     final serviceUrl = ref.watch(storageServiceUrlProvider);
+    final anyFetching = ref.watch(anyPriceFetchInProgressProvider);
     final currentSort = ref.watch(_storageSortProvider);
     final currentRarity = ref.watch(_storageRarityProvider);
     final currentWeaponType = ref.watch(_storageWeaponTypeProvider);
@@ -426,6 +428,7 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                         filteredItems: filteredItems,
                         isLoading: isLoading,
                         isPricing: isPricing,
+                        disabled: anyFetching,
                         steamProgress: steamProgress,
                         csfloatProgress: csfloatProgress,
                         onExpand: () {
@@ -538,6 +541,7 @@ class _StorageUnitCard extends StatelessWidget {
   final List<CS2Item> filteredItems;
   final bool isLoading;
   final bool isPricing;
+  final bool disabled;
   final PricingProgress? steamProgress;
   final PricingProgress? csfloatProgress;
   final VoidCallback onExpand;
@@ -548,6 +552,7 @@ class _StorageUnitCard extends StatelessWidget {
     required this.filteredItems,
     required this.isLoading,
     required this.isPricing,
+    required this.disabled,
     this.steamProgress,
     this.csfloatProgress,
     required this.onExpand,
@@ -653,7 +658,7 @@ class _StorageUnitCard extends StatelessWidget {
                   const Spacer(),
                   if (!isPricing)
                     TextButton.icon(
-                      onPressed: onFetchPrices,
+                      onPressed: disabled ? null : onFetchPrices,
                       icon: Icon(
                         unit.totalValue > 0 ? Icons.refresh : Icons.download,
                         size: 16,

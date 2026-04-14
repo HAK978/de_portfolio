@@ -85,6 +85,16 @@ user.on('disconnected', (eresult, msg) => {
   console.log(`[Steam] Disconnected: ${msg} (${eresult})`);
   isLoggedIn = false;
   isGCConnected = false;
+
+  // Reconnect after network drops — same pattern as LoggedInElsewhere handler
+  const delaySec = 30;
+  console.log(`[Steam] Will reconnect in ${delaySec}s...`);
+  setTimeout(() => {
+    if (!isLoggedIn) {
+      console.log('[Steam] Reconnecting after disconnect...');
+      user.logOn({ refreshToken: currentRefreshToken });
+    }
+  }, delaySec * 1000);
 });
 
 csgo.on('connectedToGC', () => {

@@ -10,6 +10,7 @@ import '../services/csfloat_service.dart';
 import '../services/price_service.dart';
 import 'auth_provider.dart';
 import 'inventory_provider.dart';
+import 'storage_provider.dart';
 
 /// Service instance for fetching prices.
 final priceServiceProvider = Provider<PriceService>((ref) {
@@ -145,6 +146,8 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
         saveLastPriceFetchTimestamp();
         state = state.copyWith(isFetching: false);
         _subscription = null;
+        // Also refresh Steam prices for all loaded storage units
+        ref.read(storageProvider.notifier).fetchAllStorageSteamPrices();
       },
       onError: (error) {
         debugPrint('Price fetch error: $error');
@@ -205,6 +208,15 @@ Future<void> saveLastPriceFetchTimestamp() async {
         .writeAsString(DateTime.now().millisecondsSinceEpoch.toString());
   } catch (_) {}
 }
+
+/// True if any price fetch is running anywhere in the app (inventory or storage).
+/// Used to disable all fetch buttons while a fetch is in progress.
+final anyPriceFetchInProgressProvider = Provider<bool>((ref) {
+  final steamFetching = ref.watch(priceFetchProvider).isFetching;
+  final csfloatFetching = ref.watch(csfloatFetchProvider).isFetching;
+  final storageFetching = ref.watch(storageProvider).pricingCaskets.isNotEmpty;
+  return steamFetching || csfloatFetching || storageFetching;
+});
 
 // ── CSFloat pricing ─────────────────────────────────────────
 
@@ -333,6 +345,8 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
         _syncCsfloatPricesToFirestore(lastPrices);
         state = state.copyWith(isFetching: false);
         _subscription = null;
+        // Also refresh CSFloat prices for all loaded storage units
+        ref.read(storageProvider.notifier).fetchAllStorageCsfloatPrices();
       },
       onError: (error) {
         debugPrint('CSFloat fetch error: $error');

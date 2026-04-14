@@ -181,6 +181,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final topLosers = ref.watch(topLosersProvider);
     final priceFetch = ref.watch(priceFetchProvider);
     final csfloatFetch = ref.watch(csfloatFetchProvider);
+    final anyFetching = ref.watch(anyPriceFetchInProgressProvider);
 
     final sources = <PortfolioSource>[
       PortfolioSource(
@@ -234,6 +235,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             itemCount: items.length,
             label: 'Steam Market',
             icon: Icons.attach_money,
+            disabled: anyFetching,
             onFetch: () => ref.read(priceFetchProvider.notifier).fetchPrices(),
             onCancel: () => ref.read(priceFetchProvider.notifier).cancel(),
           ),
@@ -244,6 +246,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             label: 'CSFloat',
             icon: Icons.storefront,
             iconColor: Colors.blueAccent,
+            disabled: anyFetching,
             onFetch: () => ref.read(csfloatFetchProvider.notifier).fetchPrices(),
             onCancel: () => ref.read(csfloatFetchProvider.notifier).cancel(),
           ),
@@ -293,6 +296,7 @@ class _PriceFetchCard extends StatelessWidget {
   final String label;
   final IconData icon;
   final Color? iconColor;
+  final bool disabled;
   final VoidCallback onFetch;
   final VoidCallback onCancel;
 
@@ -302,6 +306,7 @@ class _PriceFetchCard extends StatelessWidget {
     required this.label,
     required this.icon,
     this.iconColor,
+    required this.disabled,
     required this.onFetch,
     required this.onCancel,
   });
@@ -362,7 +367,7 @@ class _PriceFetchCard extends StatelessWidget {
                     ),
                   ),
                   TextButton.icon(
-                    onPressed: onFetch,
+                    onPressed: disabled ? null : onFetch,
                     icon: const Icon(Icons.refresh, size: 16),
                     label: const Text('Refresh'),
                   ),
@@ -389,7 +394,7 @@ class _PriceFetchCard extends StatelessWidget {
                     ),
                   ),
                   FilledButton.icon(
-                    onPressed: onFetch,
+                    onPressed: disabled ? null : onFetch,
                     icon: const Icon(Icons.download, size: 18),
                     label: const Text('Fetch'),
                   ),
@@ -483,14 +488,14 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _LastUpdatedLabel extends StatefulWidget {
+class _LastUpdatedLabel extends ConsumerStatefulWidget {
   const _LastUpdatedLabel();
 
   @override
-  State<_LastUpdatedLabel> createState() => _LastUpdatedLabelState();
+  ConsumerState<_LastUpdatedLabel> createState() => _LastUpdatedLabelState();
 }
 
-class _LastUpdatedLabelState extends State<_LastUpdatedLabel> {
+class _LastUpdatedLabelState extends ConsumerState<_LastUpdatedLabel> {
   String _label = '';
 
   @override
@@ -535,6 +540,13 @@ class _LastUpdatedLabelState extends State<_LastUpdatedLabel> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(priceFetchProvider, (prev, next) {
+      if (next.isDone && prev?.isDone != true) _load();
+    });
+    ref.listen(csfloatFetchProvider, (prev, next) {
+      if (next.isDone && prev?.isDone != true) _load();
+    });
+
     if (_label.isEmpty) return const SizedBox.shrink();
     return Text(
       _label,

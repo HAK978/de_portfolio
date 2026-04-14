@@ -362,6 +362,25 @@ class StorageNotifier extends Notifier<StorageState> {
     await _fetchCsfloatData(casketId, unit.items);
   }
 
+  /// Fetch Steam prices for every loaded storage unit (called from home screen).
+  Future<void> fetchAllStorageSteamPrices() async {
+    for (final unit in state.units) {
+      if (unit.items.isNotEmpty) {
+        await _fetchMarketData(unit.id, unit.items);
+      }
+    }
+    saveLastPriceFetchTimestamp();
+  }
+
+  /// Fetch CSFloat prices for every loaded storage unit (called from home screen).
+  Future<void> fetchAllStorageCsfloatPrices() async {
+    for (final unit in state.units) {
+      if (unit.items.isNotEmpty) {
+        await _fetchCsfloatData(unit.id, unit.items);
+      }
+    }
+  }
+
   /// Fetch Steam + CSFloat prices in parallel.
   Future<void> fetchAllPrices(String casketId) async {
     final units = state.units.where((u) => u.id == casketId);
