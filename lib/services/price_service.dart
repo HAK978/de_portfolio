@@ -56,7 +56,6 @@ class PriceService {
   static const _searchRenderUrl =
       'https://steamcommunity.com/market/search/render/';
   static const _delayBetweenRequests = Duration(milliseconds: 1000);
-  static const _bulkDelayBetweenRequests = Duration(milliseconds: 0);
   static const _cacheFileName = 'price_cache.json';
   static const _cacheMaxAge = Duration(hours: 1);
 
@@ -121,13 +120,8 @@ class PriceService {
     }
   }
 
-  /// Fetches prices for a list of items using bulk search/render.
-  ///
-  /// Strategy: group items by weapon prefix (e.g. "AK-47", "AWP"),
-  /// then use Steam's /market/search/render/ endpoint to fetch up to
-  /// 100 items per request. This turns ~153 individual API calls into
-  /// ~30-40 grouped calls. Items not found in bulk fall back to
-  /// individual priceoverview calls.
+  /// Fetches prices for a list of items one by one from Steam Market.
+  /// Yields progress after each item. 1s delay between requests.
   Stream<PriceFetchProgress> fetchPrices(List<String> marketHashNames) async* {
     final prices = <String, double>{};
 
@@ -135,10 +129,7 @@ class PriceService {
     final cached = await loadCachedPrices();
     prices.addAll(cached);
 
-    // Items still needing prices
-    final remaining = <String>{
-      ...marketHashNames.where((name) => !cached.containsKey(name)),
-    };
+    final remaining = marketHashNames.where((n) => !cached.containsKey(n)).toList();
 
     debugPrint('Price fetch: ${cached.length} cached, ${remaining.length} to fetch');
 
@@ -158,58 +149,12 @@ class PriceService {
       return;
     }
 
-    // ── Phase 1: Bulk fetch via search/render ──
-    // Group items by the prefix before " | " (e.g. "AK-47", "AWP").
-    // One search per group resolves multiple items at once.
-    final groups = _groupByPrefix(remaining.toList());
-    debugPrint('Bulk fetch: ${groups.length} weapon groups for ${remaining.length} items');
-
-    for (final entry in groups.entries) {
-      final prefix = entry.key;
-      final itemsInGroup = entry.value;
-
-      try {
-        final results = await _searchRender(prefix, count: 100);
-
-        for (final result in results) {
-          if (remaining.contains(result.hashName)) {
-            prices[result.hashName] = result.price;
-            remaining.remove(result.hashName);
-            fetchedCount++;
-          }
-        }
-
-        debugPrint('Bulk "$prefix": found ${itemsInGroup.length - remaining.where((n) => itemsInGroup.contains(n)).length}/${itemsInGroup.length}');
-      } catch (e) {
-        debugPrint('Bulk search failed for "$prefix": $e');
-      }
-
-      yield PriceFetchProgress(
-        fetched: fetchedCount,
-        total: marketHashNames.length,
-        currentItem: 'Bulk: $prefix',
-        prices: Map.of(prices),
-      );
-
-      // Rate limit between bulk requests
-      if (entry.key != groups.keys.last) {
-        await Future.delayed(_bulkDelayBetweenRequests);
-      }
-    }
-
-    // ── Phase 2: Fallback for items not found in bulk ──
-    if (remaining.isNotEmpty) {
-      debugPrint('Falling back to individual fetch for ${remaining.length} items');
-    }
-
-    for (final name in remaining.toList()) {
+    for (final name in remaining) {
       final result = await fetchPrice(name);
 
       if (result != null) {
         final price = result.lowestPrice ?? result.medianPrice;
-        if (price != null) {
-          prices[name] = price;
-        }
+        if (price != null) prices[name] = price;
       }
 
       fetchedCount++;
@@ -274,19 +219,6 @@ class PriceService {
 
   /// Builds a full Steam CDN image URL from an icon_url hash.
   static String buildImageUrl(String iconUrl) => '$_imageBase$iconUrl';
-
-  /// Groups market hash names by their prefix before " | ".
-  /// e.g. "AK-47 | Redline (FT)" → group "AK-47"
-  /// Items without " | " (cases, keys) get their own group.
-  Map<String, List<String>> _groupByPrefix(List<String> names) {
-    final groups = <String, List<String>>{};
-    for (final name in names) {
-      final pipeIdx = name.indexOf(' | ');
-      final prefix = pipeIdx > 0 ? name.substring(0, pipeIdx) : name;
-      groups.putIfAbsent(prefix, () => []).add(name);
-    }
-    return groups;
-  }
 
   /// Fetches items from Steam's search/render endpoint.
   /// Returns up to [count] results matching the query.
