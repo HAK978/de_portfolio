@@ -209,13 +209,27 @@ Future<void> saveLastPriceFetchTimestamp() async {
   } catch (_) {}
 }
 
-/// True if any price fetch is running anywhere in the app (inventory or storage).
-/// Used to disable all fetch buttons while a fetch is in progress.
+/// True if Steam Market is being fetched anywhere (inventory or storage).
+final steamFetchInProgressProvider = Provider<bool>((ref) {
+  final inventoryFetching = ref.watch(priceFetchProvider).isFetching;
+  final storageFetching = ref.watch(storageProvider).pricingCaskets
+      .any((key) => key.endsWith('_steam'));
+  return inventoryFetching || storageFetching;
+});
+
+/// True if CSFloat is being fetched anywhere (inventory or storage).
+final csfloatFetchInProgressProvider = Provider<bool>((ref) {
+  final inventoryFetching = ref.watch(csfloatFetchProvider).isFetching;
+  final storageFetching = ref.watch(storageProvider).pricingCaskets
+      .any((key) => key.endsWith('_csfloat'));
+  return inventoryFetching || storageFetching;
+});
+
+/// True if any price fetch is in progress — used to disable storage unit
+/// fetch buttons (which trigger both Steam and CSFloat simultaneously).
 final anyPriceFetchInProgressProvider = Provider<bool>((ref) {
-  final steamFetching = ref.watch(priceFetchProvider).isFetching;
-  final csfloatFetching = ref.watch(csfloatFetchProvider).isFetching;
-  final storageFetching = ref.watch(storageProvider).pricingCaskets.isNotEmpty;
-  return steamFetching || csfloatFetching || storageFetching;
+  return ref.watch(steamFetchInProgressProvider) ||
+      ref.watch(csfloatFetchInProgressProvider);
 });
 
 // ── CSFloat pricing ─────────────────────────────────────────

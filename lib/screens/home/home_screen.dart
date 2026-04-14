@@ -181,7 +181,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final topLosers = ref.watch(topLosersProvider);
     final priceFetch = ref.watch(priceFetchProvider);
     final csfloatFetch = ref.watch(csfloatFetchProvider);
-    final anyFetching = ref.watch(anyPriceFetchInProgressProvider);
+    final steamFetching = ref.watch(steamFetchInProgressProvider);
+    final csfloatFetching = ref.watch(csfloatFetchInProgressProvider);
 
     final sources = <PortfolioSource>[
       PortfolioSource(
@@ -235,7 +236,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             itemCount: items.length,
             label: 'Steam Market',
             icon: Icons.attach_money,
-            disabled: anyFetching,
+            disabled: steamFetching,
             onFetch: () => ref.read(priceFetchProvider.notifier).fetchPrices(),
             onCancel: () => ref.read(priceFetchProvider.notifier).cancel(),
           ),
@@ -246,7 +247,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             label: 'CSFloat',
             icon: Icons.storefront,
             iconColor: Colors.blueAccent,
-            disabled: anyFetching,
+            disabled: csfloatFetching,
             onFetch: () => ref.read(csfloatFetchProvider.notifier).fetchPrices(),
             onCancel: () => ref.read(csfloatFetchProvider.notifier).cancel(),
           ),

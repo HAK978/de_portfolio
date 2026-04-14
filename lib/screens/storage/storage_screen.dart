@@ -224,7 +224,7 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   Widget build(BuildContext context) {
     final storage = ref.watch(storageProvider);
     final serviceUrl = ref.watch(storageServiceUrlProvider);
-    final anyFetching = ref.watch(anyPriceFetchInProgressProvider);
+    final anyFetching = ref.watch(anyPriceFetchInProgressProvider); // disables storage fetch if Steam or CSFloat is busy
     final currentSort = ref.watch(_storageSortProvider);
     final currentRarity = ref.watch(_storageRarityProvider);
     final currentWeaponType = ref.watch(_storageWeaponTypeProvider);
