@@ -85,16 +85,8 @@ user.on('disconnected', (eresult, msg) => {
   console.log(`[Steam] Disconnected: ${msg} (${eresult})`);
   isLoggedIn = false;
   isGCConnected = false;
-
-  // Reconnect after network drops — same pattern as LoggedInElsewhere handler
-  const delaySec = 30;
-  console.log(`[Steam] Will reconnect in ${delaySec}s...`);
-  setTimeout(() => {
-    if (!isLoggedIn) {
-      console.log('[Steam] Reconnecting after disconnect...');
-      user.logOn({ refreshToken: currentRefreshToken });
-    }
-  }, delaySec * 1000);
+  // autoRelogin (default: true) handles reconnect automatically.
+  // The watchdog below catches cases where autoRelogin gets stuck.
 });
 
 csgo.on('connectedToGC', () => {
@@ -116,6 +108,23 @@ csgo.on('disconnectedFromGC', (reason) => {
     }, 10000);
   }
 });
+
+// ── Watchdog: recover from stuck disconnects ──────────────
+// autoRelogin handles most disconnects, but can get stuck.
+// Every 2 minutes: if Steam is down, re-login; if GC is down, re-send gamesPlayed.
+setInterval(() => {
+  if (!isLoggedIn) {
+    console.log('[Watchdog] Steam disconnected — attempting re-login...');
+    try {
+      user.logOn({ refreshToken: currentRefreshToken });
+    } catch (e) {
+      console.log('[Watchdog] logOn failed:', e.message);
+    }
+  } else if (!isGCConnected) {
+    console.log('[Watchdog] GC disconnected — re-sending gamesPlayed...');
+    user.gamesPlayed([730], true);
+  }
+}, 2 * 60 * 1000);
 
 // ── Helper: wait for GC connection ────────────────────────
 
