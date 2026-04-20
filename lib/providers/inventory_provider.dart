@@ -23,6 +23,9 @@ class SteamIdNotifier extends Notifier<String> {
 
   @override
   String build() {
+    // Keep alive so Riverpod 3's auto-dispose doesn't reset auth state
+    // mid-session (e.g. during Navigator push/pop transitions).
+    ref.keepAlive();
     // Load saved Steam ID on startup (async, sets state when done)
     _loadSavedId();
     return ''; // empty initially
@@ -39,7 +42,8 @@ class SteamIdNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       if (file.existsSync()) {
         final id = await file.readAsString();
-        if (id.trim().isNotEmpty) {
+        // Don't overwrite if already set (e.g. sign-in completed before disk read)
+        if (id.trim().isNotEmpty && state.isEmpty) {
           debugPrint('Loaded saved Steam ID: $id');
           state = id.trim();
         }

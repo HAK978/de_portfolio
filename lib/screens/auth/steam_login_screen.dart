@@ -26,7 +26,7 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
   bool _isLoading = true;
   bool _wasBackgrounded = false;
   bool _navigatedToProfile = false; // true after we redirect to steamcommunity
-  bool _extracting = false;
+  bool _popped = false; // true after Navigator.pop() called — prevents double-pop
 
   @override
   void initState() {
@@ -52,7 +52,11 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
         ),
       )
       ..loadRequest(Uri.parse(
-        'https://store.steampowered.com/login/?redir=my/profile',
+        // Login at steamcommunity.com so cookies are set for that domain
+        // directly. Using store.steampowered.com caused a cross-domain
+        // cookie gap after clearCookies() (sign-out), where steamcommunity.com
+        // was unauthenticated and extraction silently failed.
+        'https://steamcommunity.com/login/home/?goto=my/profile',
       ));
   }
 
@@ -94,7 +98,7 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
   void _checkForLogin(String url) {
     debugPrint('PAGE FINISHED: $url');
 
-    // If we already navigated to steamcommunity — extract from here
+    // If we already navigated past login — extract from here
     if (_navigatedToProfile) {
       if (url.contains('steamcommunity.com')) {
         _tryExtract(url);
@@ -105,30 +109,37 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
     // Still on login/signin/guard pages — not done yet
     if (url.contains('/login') || url.contains('/signin')) return;
 
-    // Past login on any Steam domain — navigate to steamcommunity once
-    // to ensure the steamLoginSecure cookie is accessible
+    // Past login on a Steam domain
     final isSteam = url.contains('steampowered.com') ||
         url.contains('steamcommunity.com');
     if (!isSteam) return;
 
-    debugPrint('Login detected — navigating to steamcommunity for cookie...');
     _navigatedToProfile = true;
-    _controller.loadRequest(
-        Uri.parse('https://steamcommunity.com/my/profile'));
+
+    if (url.contains('steamcommunity.com')) {
+      // Already on steamcommunity.com — cookies are set here, extract directly.
+      debugPrint('Login detected on steamcommunity — extracting...');
+      _tryExtract(url);
+    } else {
+      // On steampowered.com — navigate to steamcommunity for the cookie.
+      // (Fallback path if the login URL is ever changed back.)
+      debugPrint('Login detected on steampowered — navigating to steamcommunity...');
+      _controller.loadRequest(
+          Uri.parse('https://steamcommunity.com/my/profile'));
+    }
   }
 
-  /// Attempt extraction once; no-op if already in progress.
+  /// Attempt extraction; only pops when we have a non-empty Steam ID.
+  /// Concurrent attempts are allowed — _popped guards against double-pop.
+  /// Popping with an empty steamId would cause the caller to silently
+  /// discard the login and the user ends up back at the sign-in screen.
   Future<void> _tryExtract(String url) async {
-    if (_extracting) return;
-    _extracting = true;
-    try {
-      final result = await _extract(url);
-      if (result != null && mounted) {
-        Navigator.of(context).pop(result);
-      }
-    } finally {
-      _extracting = false;
-    }
+    if (_popped) return;
+    final result = await _extract(url);
+    if (result == null || result.steamId.isEmpty) return;
+    if (!mounted || _popped) return;
+    _popped = true;
+    Navigator.of(context).pop(result);
   }
 
   /// Navigate to steamcommunity then extract once the page loads.

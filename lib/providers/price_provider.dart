@@ -244,6 +244,7 @@ class CsfloatApiKeyNotifier extends Notifier<String> {
 
   @override
   String build() {
+    ref.keepAlive();
     _loadSavedKey();
     return '';
   }
@@ -259,7 +260,7 @@ class CsfloatApiKeyNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       if (file.existsSync()) {
         final key = await file.readAsString();
-        if (key.trim().isNotEmpty) {
+        if (key.trim().isNotEmpty && state.isEmpty) {
           state = key.trim();
         }
       }

@@ -21,6 +21,7 @@ class SteamLoginCookieNotifier extends Notifier<String> {
 
   @override
   String build() {
+    ref.keepAlive();
     _loadSaved();
     return '';
   }
@@ -36,7 +37,7 @@ class SteamLoginCookieNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       if (file.existsSync()) {
         final cookie = await file.readAsString();
-        if (cookie.trim().isNotEmpty) {
+        if (cookie.trim().isNotEmpty && state.isEmpty) {
           state = cookie.trim();
           debugPrint('Loaded Steam login cookie from disk');
         }
