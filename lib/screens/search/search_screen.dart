@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../models/cs2_item.dart';
 import '../../providers/cs2_database_provider.dart';
 import '../../providers/search_history_provider.dart';
+import '../../providers/search_prices_provider.dart';
 import '../../theme/app_theme.dart';
 
 /// Holds the current search query for the Search tab.
@@ -234,6 +235,15 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     ref.watch(searchWearFilterProvider);
     ref.watch(searchCollectionFilterProvider);
 
+    // Whenever the filtered list updates and is small enough, kick off
+    // price fetches for the visible items. The notifier dedupes against
+    // already-cached items so this is cheap for repeated narrow queries.
+    ref.listen<List<CS2Item>>(filteredSearchResultsProvider, (_, next) {
+      if (next.isEmpty) return;
+      if (next.length > searchPriceAutoFetchCap) return;
+      ref.read(searchPricesProvider.notifier).fetchForItems(next);
+    });
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Search', style: TextStyle(fontWeight: FontWeight.w700)),
@@ -337,10 +347,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                 allItems: items,
                 hasQuery: query.isNotEmpty,
                 onTap: (item) {
+                  // Carry already-fetched prices into the detail screen
+                  // so it doesn't re-hit the APIs.
+                  final prices = ref.read(searchPricesProvider);
+                  final enriched = item.copyWith(
+                    currentPrice:
+                        prices.steam[item.marketHashName] ?? item.currentPrice,
+                    csfloatPrice:
+                        prices.csfloat[item.marketHashName] ?? item.csfloatPrice,
+                  );
                   ref
                       .read(searchHistoryProvider.notifier)
                       .record(item.marketHashName);
-                  context.push('/search/item', extra: item);
+                  context.push('/search/item', extra: enriched);
                 },
               ),
             ),
@@ -435,14 +454,33 @@ class _ResultList extends ConsumerWidget {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: filtered.length,
-      cacheExtent: 500,
-      itemBuilder: (context, i) => _SearchResultCard(
-        item: filtered[i],
-        onTap: () => onTap(filtered[i]),
-      ),
+    final overCap = filtered.length > searchPriceAutoFetchCap;
+
+    return Column(
+      children: [
+        if (overCap)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Text(
+              'Narrow filters to see live prices '
+              '(${filtered.length} results, prices fetched for ≤$searchPriceAutoFetchCap)',
+              style: TextStyle(color: Colors.grey[500], fontSize: 11),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: filtered.length,
+            cacheExtent: 500,
+            itemBuilder: (context, i) => _SearchResultCard(
+              item: filtered[i],
+              onTap: () => onTap(filtered[i]),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -546,11 +584,11 @@ class _RecentSection extends ConsumerWidget {
   }
 }
 
-/// Slim card for search results — no price column since catalog items
-/// have no price until tapped. [onDismiss] is only set for Recent entries
-/// and renders a small close button so the user can prune individual
-/// history items.
-class _SearchResultCard extends StatelessWidget {
+/// Result card for the Search tab. Watches per-item price state via
+/// `select` so only its own row rebuilds when its prices arrive.
+/// [onDismiss], when set, replaces the trailing chevron with an X
+/// (used for Recent history entries).
+class _SearchResultCard extends ConsumerWidget {
   final CS2Item item;
   final VoidCallback onTap;
   final VoidCallback? onDismiss;
@@ -562,8 +600,22 @@ class _SearchResultCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final rarityColor = CS2Colors.fromRarity(item.rarity);
+    final hash = item.marketHashName;
+
+    final steamState = ref.watch(searchPricesProvider.select((s) {
+      if (s.loading.contains(hash) && !s.steam.containsKey(hash)) {
+        return const _PriceCell.loading();
+      }
+      if (!s.steam.containsKey(hash)) return const _PriceCell.pending();
+      return _PriceCell.value(s.steam[hash]);
+    }));
+    final cfPrice = ref.watch(
+        searchPricesProvider.select((s) => s.csfloat[hash]));
+    final cfFetched = ref.watch(
+        searchPricesProvider.select((s) => s.csfloat.containsKey(hash)));
+
     return RepaintBoundary(
       child: Card(
         clipBehavior: Clip.hardEdge,
@@ -610,14 +662,16 @@ class _SearchResultCard extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          [
-                            item.weaponType,
-                            item.rarity,
-                          ].join(' • '),
+                          [item.weaponType, item.rarity].join(' • '),
                           style: TextStyle(color: Colors.grey[400], fontSize: 12),
                         ),
                       ],
                     ),
+                  ),
+                  _PriceColumn(
+                    steam: steamState,
+                    csfloat: cfPrice,
+                    csfloatFetched: cfFetched,
                   ),
                   if (onDismiss != null)
                     IconButton(
@@ -635,6 +689,99 @@ class _SearchResultCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Render state for the Steam side of a result row.
+class _PriceCell {
+  final bool isLoading;
+  final bool isPending; // queued but not yet fetched
+  final double? price; // null when fetched with no listing
+
+  const _PriceCell.loading()
+      : isLoading = true,
+        isPending = false,
+        price = null;
+  const _PriceCell.pending()
+      : isLoading = false,
+        isPending = true,
+        price = null;
+  const _PriceCell.value(this.price)
+      : isLoading = false,
+        isPending = false;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _PriceCell &&
+      other.isLoading == isLoading &&
+      other.isPending == isPending &&
+      other.price == price;
+
+  @override
+  int get hashCode => Object.hash(isLoading, isPending, price);
+}
+
+class _PriceColumn extends StatelessWidget {
+  final _PriceCell steam;
+  final double? csfloat;
+  final bool csfloatFetched;
+
+  const _PriceColumn({
+    required this.steam,
+    required this.csfloat,
+    required this.csfloatFetched,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _steamText(),
+          const SizedBox(height: 2),
+          _csfloatText(),
+        ],
+      ),
+    );
+  }
+
+  Widget _steamText() {
+    if (steam.isLoading) {
+      return const SizedBox(
+        width: 12,
+        height: 12,
+        child: CircularProgressIndicator(strokeWidth: 1.5),
+      );
+    }
+    if (steam.isPending) {
+      return Text('—', style: TextStyle(color: Colors.grey[600], fontSize: 13));
+    }
+    final price = steam.price;
+    if (price == null) {
+      return Text('n/a',
+          style: TextStyle(color: Colors.grey[600], fontSize: 11));
+    }
+    return Text(
+      '\$${price.toStringAsFixed(2)}',
+      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+    );
+  }
+
+  Widget _csfloatText() {
+    if (!csfloatFetched) {
+      return Text('—', style: TextStyle(color: Colors.grey[700], fontSize: 11));
+    }
+    if (csfloat == null) {
+      return Text('n/a',
+          style: TextStyle(color: Colors.grey[700], fontSize: 10));
+    }
+    return Text(
+      '\$${csfloat!.toStringAsFixed(2)}',
+      style: TextStyle(color: Colors.blueAccent[100], fontSize: 11),
     );
   }
 }

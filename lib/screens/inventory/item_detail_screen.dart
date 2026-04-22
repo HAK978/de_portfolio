@@ -27,13 +27,18 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
   @override
   void initState() {
     super.initState();
-    // Catalog-search items arrive with price 0 — fetch Steam + CSFloat now.
+    // Catalog-search items arrive with price 0 — fetch Steam + CSFloat
+    // now, unless the Search tab already populated them via the list
+    // price fetch (in which case currentPrice > 0 or csfloatPrice != null).
     final p = widget.passedItem;
     if (p != null && p.location == 'search') {
-      _fetchingPrices = true;
-      // Can't call ref.read in initState before first build completes;
-      // defer to the next frame so the providers are ready.
-      WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPrices(p));
+      final alreadyPriced = p.currentPrice > 0 || p.csfloatPrice != null;
+      if (!alreadyPriced) {
+        _fetchingPrices = true;
+        // Can't call ref.read in initState before first build completes;
+        // defer to the next frame so the providers are ready.
+        WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPrices(p));
+      }
     }
   }
 
