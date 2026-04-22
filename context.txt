@@ -20,6 +20,11 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 - `lib/app.dart` — added `/search/item` sub-route (same pattern as `/storage/item`, accepts CS2Item via `state.extra`)
 - CS2Item field `location == 'search'` is the marker for catalog entries (triggers auto-fetch)
 
+#### Search detail: refresh + history
+- Refresh icon in app bar on search item detail re-runs Steam + CSFloat fetch (disabled while in flight)
+- `lib/providers/search_history_provider.dart` — Notifier persists last 20 market_hash_names to `search_history.json`. Tapping a search result records it; empty-query state shows "Recent" list with per-entry X and Clear All. History entries that no longer resolve in the catalog are silently skipped
+- Dart gotcha: promoted nullables demote inside closures. Capture `item!` into a local before using in IconButton's onPressed
+
 #### Steam search/render for catalog prices
 - Added `PriceService.fetchPriceViaSearch(marketHashName)` → returns `MarketItemResult?`
 - Uses the search/render endpoint (not priceoverview) — priceoverview routinely returns success=false or null prices for items that DO have live listings (it only reflects items with recent sales)

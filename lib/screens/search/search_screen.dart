@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../models/cs2_item.dart';
 import '../../providers/cs2_database_provider.dart';
+import '../../providers/search_history_provider.dart';
 import '../../theme/app_theme.dart';
 
 /// Holds the current search query for the Search tab.
@@ -141,7 +142,16 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   ),
                 ),
               ),
-              data: (items) => _ResultList(items: items, query: query),
+              data: (items) => _ResultList(
+                items: items,
+                query: query,
+                onTap: (item) {
+                  ref
+                      .read(searchHistoryProvider.notifier)
+                      .record(item.marketHashName);
+                  context.push('/search/item', extra: item);
+                },
+              ),
             ),
           ),
         ],
@@ -150,34 +160,21 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 }
 
-class _ResultList extends StatelessWidget {
+class _ResultList extends ConsumerWidget {
   final List<CS2Item> items;
   final String query;
+  final void Function(CS2Item) onTap;
 
-  const _ResultList({required this.items, required this.query});
+  const _ResultList({
+    required this.items,
+    required this.query,
+    required this.onTap,
+  });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (query.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.search, size: 48, color: Colors.grey[600]),
-            const SizedBox(height: 8),
-            Text(
-              '${items.length} items indexed',
-              style: TextStyle(color: Colors.grey[500]),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Type to filter — e.g. "redline" or "dragon lore factory new"',
-              style: TextStyle(color: Colors.grey[600], fontSize: 12),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      );
+      return _RecentSection(items: items, onTap: onTap);
     }
 
     // Split on whitespace so order-independent queries work:
@@ -208,19 +205,125 @@ class _ResultList extends StatelessWidget {
       cacheExtent: 500,
       itemBuilder: (context, i) => _SearchResultCard(
         item: matches[i],
-        onTap: () => context.push('/search/item', extra: matches[i]),
+        onTap: () => onTap(matches[i]),
       ),
     );
   }
 }
 
+/// Shown when the search box is empty: recently opened items + catalog size.
+class _RecentSection extends ConsumerWidget {
+  final List<CS2Item> items;
+  final void Function(CS2Item) onTap;
+
+  const _RecentSection({required this.items, required this.onTap});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final history = ref.watch(searchHistoryProvider);
+
+    if (history.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.search, size: 48, color: Colors.grey[600]),
+            const SizedBox(height: 8),
+            Text(
+              '${items.length} items indexed',
+              style: TextStyle(color: Colors.grey[500]),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Type to filter — e.g. "redline" or "dragon lore factory new"',
+              style: TextStyle(color: Colors.grey[600], fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Look each history entry up in the catalog. Skip anything that
+    // can't be resolved (catalog may have been refreshed and the item
+    // renamed/removed).
+    final byHash = {for (final i in items) i.marketHashName: i};
+    final recentItems = history
+        .map((h) => byHash[h])
+        .whereType<CS2Item>()
+        .toList();
+
+    if (recentItems.isEmpty) {
+      return Center(
+        child: Text(
+          '${items.length} items indexed',
+          style: TextStyle(color: Colors.grey[500]),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Row(
+            children: [
+              Icon(Icons.history, size: 18, color: Colors.grey[400]),
+              const SizedBox(width: 8),
+              Text(
+                'Recent',
+                style: TextStyle(
+                  color: Colors.grey[300],
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () =>
+                    ref.read(searchHistoryProvider.notifier).clear(),
+                child: const Text('Clear'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: recentItems.length,
+            cacheExtent: 500,
+            itemBuilder: (context, i) {
+              final item = recentItems[i];
+              return _SearchResultCard(
+                item: item,
+                onTap: () => onTap(item),
+                onDismiss: () => ref
+                    .read(searchHistoryProvider.notifier)
+                    .remove(item.marketHashName),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// Slim card for search results — no price column since catalog items
-/// have no price until tapped.
+/// have no price until tapped. [onDismiss] is only set for Recent entries
+/// and renders a small close button so the user can prune individual
+/// history items.
 class _SearchResultCard extends StatelessWidget {
   final CS2Item item;
   final VoidCallback onTap;
+  final VoidCallback? onDismiss;
 
-  const _SearchResultCard({required this.item, required this.onTap});
+  const _SearchResultCard({
+    required this.item,
+    required this.onTap,
+    this.onDismiss,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -280,7 +383,16 @@ class _SearchResultCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const Icon(Icons.chevron_right, color: Colors.white30),
+                  if (onDismiss != null)
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 18),
+                      color: Colors.white30,
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Remove from history',
+                      onPressed: onDismiss,
+                    )
+                  else
+                    const Icon(Icons.chevron_right, color: Colors.white30),
                 ],
               ),
             ),

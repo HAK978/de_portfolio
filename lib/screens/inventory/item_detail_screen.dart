@@ -94,7 +94,28 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
     final isSearchItem = item.location == 'search';
 
     return Scaffold(
-      appBar: AppBar(title: Text(item.name)),
+      appBar: AppBar(
+        title: Text(item.name),
+        actions: [
+          if (isSearchItem)
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh prices',
+              onPressed: _fetchingPrices
+                  ? null
+                  : () {
+                      // Capture into a non-nullable local — Dart demotes
+                      // the promoted type inside a closure.
+                      final target = item!;
+                      setState(() {
+                        _fetchingPrices = true;
+                        _fetchError = null;
+                      });
+                      _fetchPrices(target);
+                    },
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
