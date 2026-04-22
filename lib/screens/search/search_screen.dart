@@ -602,14 +602,11 @@ class _ActiveFilterChipsRow extends ConsumerWidget {
     final chips = <Widget>[];
     void addChips(Set<String> values, void Function(String) onDelete) {
       for (final v in values) {
-        chips.add(Padding(
-          padding: const EdgeInsets.only(right: 6),
-          child: InputChip(
-            label: Text(v, style: const TextStyle(fontSize: 12)),
-            onDeleted: () => onDelete(v),
-            visualDensity: VisualDensity.compact,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
+        chips.add(InputChip(
+          label: Text(v, style: const TextStyle(fontSize: 12)),
+          onDeleted: () => onDelete(v),
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ));
       }
     }
@@ -627,11 +624,11 @@ class _ActiveFilterChipsRow extends ConsumerWidget {
 
     if (chips.isEmpty) return const SizedBox.shrink();
 
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
         children: chips,
       ),
     );
