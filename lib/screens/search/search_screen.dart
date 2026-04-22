@@ -19,9 +19,165 @@ class SearchCatalogQueryNotifier extends Notifier<String> {
   void set(String value) => state = value;
 }
 
+// ── Filter state providers ───────────────────────────────────────
+//
+// Intentionally separate from the inventory's filter providers so
+// filters set on one tab don't bleed into the other.
+
+final searchRarityFilterProvider =
+    NotifierProvider<SearchRarityFilterNotifier, Set<String>>(
+  SearchRarityFilterNotifier.new,
+);
+
+class SearchRarityFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+final searchWeaponTypeFilterProvider =
+    NotifierProvider<SearchWeaponTypeFilterNotifier, Set<String>>(
+  SearchWeaponTypeFilterNotifier.new,
+);
+
+class SearchWeaponTypeFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+final searchWearFilterProvider =
+    NotifierProvider<SearchWearFilterNotifier, Set<String>>(
+  SearchWearFilterNotifier.new,
+);
+
+class SearchWearFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+final searchCollectionFilterProvider =
+    NotifierProvider<SearchCollectionFilterNotifier, Set<String>>(
+  SearchCollectionFilterNotifier.new,
+);
+
+class SearchCollectionFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+// ── Derived option lists ─────────────────────────────────────────
+//
+// Options for each filter are computed from the loaded catalog so
+// new item types (e.g. ByMykel adds a new rarity or category) show up
+// automatically. Recomputes only when the catalog changes.
+
+final availableSearchRaritiesProvider = Provider<List<String>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final set = <String>{for (final i in items) i.rarity};
+  return set.toList()..sort();
+});
+
+final availableSearchWeaponTypesProvider = Provider<List<String>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final set = <String>{for (final i in items) i.weaponType};
+  return set.toList()..sort();
+});
+
+final availableSearchWearsProvider = Provider<List<String>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final set = <String>{};
+  for (final i in items) {
+    final w = i.wear;
+    if (w != null) set.add(w);
+  }
+  // Present in CS2's natural wear order (FN → BS).
+  const order = [
+    'Factory New',
+    'Minimal Wear',
+    'Field-Tested',
+    'Well-Worn',
+    'Battle-Scarred',
+  ];
+  final ordered = [for (final w in order) if (set.remove(w)) w];
+  ordered.addAll(set.toList()..sort());
+  return ordered;
+});
+
+final availableSearchCollectionsProvider = Provider<List<String>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final set = <String>{};
+  for (final i in items) {
+    final c = i.collection;
+    if (c != null && c.isNotEmpty) set.add(c);
+  }
+  return set.toList()..sort();
+});
+
+List<CS2Item> _currentCatalogItems(Ref ref) {
+  final async = ref.watch(cs2DatabaseProvider);
+  return async.when(
+    data: (d) => d,
+    loading: () => <CS2Item>[],
+    error: (_, _) => <CS2Item>[],
+  );
+}
+
+/// Filtered + capped result list. Returns an empty list when there's
+/// no query and no active filter — the UI falls back to "Recent" in
+/// that case.
+final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final query = ref.watch(searchCatalogQueryProvider).trim().toLowerCase();
+  final rarity = ref.watch(searchRarityFilterProvider);
+  final weapon = ref.watch(searchWeaponTypeFilterProvider);
+  final wear = ref.watch(searchWearFilterProvider);
+  final collection = ref.watch(searchCollectionFilterProvider);
+
+  final tokens =
+      query.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+
+  final noInput = tokens.isEmpty &&
+      rarity.isEmpty &&
+      weapon.isEmpty &&
+      wear.isEmpty &&
+      collection.isEmpty;
+  if (noInput) return const [];
+
+  final out = <CS2Item>[];
+  for (final item in items) {
+    if (tokens.isNotEmpty) {
+      final hay = item.marketHashName.toLowerCase();
+      if (!tokens.every(hay.contains)) continue;
+    }
+    if (rarity.isNotEmpty && !rarity.contains(item.rarity)) continue;
+    if (weapon.isNotEmpty && !weapon.contains(item.weaponType)) continue;
+    if (wear.isNotEmpty) {
+      final w = item.wear;
+      if (w == null || !wear.contains(w)) continue;
+    }
+    if (collection.isNotEmpty) {
+      final c = item.collection;
+      if (c == null || !collection.contains(c)) continue;
+    }
+    out.add(item);
+    if (out.length >= _maxResults) break;
+  }
+  return out;
+});
+
 /// Max number of rows to render at once — prevents the ListView
-/// from trying to build 30k+ widgets when the query is empty or very
-/// short. Substring filter is cheap but widget creation is not.
+/// from trying to build 30k+ widgets when the query is very short.
 const _maxResults = 200;
 
 class SearchScreen extends ConsumerStatefulWidget {
@@ -48,19 +204,48 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     super.dispose();
   }
 
+  bool _hasActiveFilters() {
+    return ref.read(searchRarityFilterProvider).isNotEmpty ||
+        ref.read(searchWeaponTypeFilterProvider).isNotEmpty ||
+        ref.read(searchWearFilterProvider).isNotEmpty ||
+        ref.read(searchCollectionFilterProvider).isNotEmpty;
+  }
+
+  void _showFilterSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => const _SearchFilterSheet(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final catalogAsync = ref.watch(cs2DatabaseProvider);
     final query = ref.watch(searchCatalogQueryProvider).trim().toLowerCase();
+
+    // Watch filters so the app bar badge rebuilds when they change.
+    ref.watch(searchRarityFilterProvider);
+    ref.watch(searchWeaponTypeFilterProvider);
+    ref.watch(searchWearFilterProvider);
+    ref.watch(searchCollectionFilterProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Search', style: TextStyle(fontWeight: FontWeight.w700)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Settings',
-            onPressed: () => context.push('/settings'),
+            icon: Badge(
+              isLabelVisible: _hasActiveFilters(),
+              smallSize: 8,
+              child: const Icon(Icons.filter_list),
+            ),
+            tooltip: 'Filters',
+            onPressed: catalogAsync.isLoading ? null : _showFilterSheet,
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -68,6 +253,11 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             onPressed: catalogAsync.isLoading
                 ? null
                 : () => ref.read(cs2DatabaseProvider.notifier).refresh(),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: () => context.push('/settings'),
           ),
         ],
       ),
@@ -101,6 +291,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               ),
             ),
           ),
+          const _ActiveFilterChipsRow(),
           Expanded(
             child: catalogAsync.when(
               loading: () => const Center(
@@ -143,8 +334,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                 ),
               ),
               data: (items) => _ResultList(
-                items: items,
-                query: query,
+                allItems: items,
+                hasQuery: query.isNotEmpty,
                 onTap: (item) {
                   ref
                       .read(searchHistoryProvider.notifier)
@@ -160,37 +351,82 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 }
 
+/// Horizontal strip of chips summarizing active filters — gives a
+/// glance at what's applied and lets the user tap-to-remove without
+/// opening the filter sheet.
+class _ActiveFilterChipsRow extends ConsumerWidget {
+  const _ActiveFilterChipsRow();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final rarity = ref.watch(searchRarityFilterProvider);
+    final weapon = ref.watch(searchWeaponTypeFilterProvider);
+    final wear = ref.watch(searchWearFilterProvider);
+    final collection = ref.watch(searchCollectionFilterProvider);
+
+    final chips = <Widget>[];
+    void addChips(Set<String> values, void Function(String) onDelete) {
+      for (final v in values) {
+        chips.add(Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: InputChip(
+            label: Text(v, style: const TextStyle(fontSize: 12)),
+            onDeleted: () => onDelete(v),
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ));
+      }
+    }
+
+    addChips(rarity,
+        (v) => ref.read(searchRarityFilterProvider.notifier).toggle(v));
+    addChips(weapon,
+        (v) => ref.read(searchWeaponTypeFilterProvider.notifier).toggle(v));
+    addChips(
+        wear, (v) => ref.read(searchWearFilterProvider.notifier).toggle(v));
+    addChips(collection,
+        (v) => ref.read(searchCollectionFilterProvider.notifier).toggle(v));
+
+    if (chips.isEmpty) return const SizedBox.shrink();
+
+    return SizedBox(
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: chips,
+      ),
+    );
+  }
+}
+
 class _ResultList extends ConsumerWidget {
-  final List<CS2Item> items;
-  final String query;
+  final List<CS2Item> allItems;
+  final bool hasQuery;
   final void Function(CS2Item) onTap;
 
   const _ResultList({
-    required this.items,
-    required this.query,
+    required this.allItems,
+    required this.hasQuery,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (query.isEmpty) {
-      return _RecentSection(items: items, onTap: onTap);
+    final filtered = ref.watch(filteredSearchResultsProvider);
+    final hasActiveFilters =
+        ref.watch(searchRarityFilterProvider).isNotEmpty ||
+            ref.watch(searchWeaponTypeFilterProvider).isNotEmpty ||
+            ref.watch(searchWearFilterProvider).isNotEmpty ||
+            ref.watch(searchCollectionFilterProvider).isNotEmpty;
+
+    // No query AND no filters → show recent history / help text.
+    if (!hasQuery && !hasActiveFilters) {
+      return _RecentSection(items: allItems, onTap: onTap);
     }
 
-    // Split on whitespace so order-independent queries work:
-    // "redline factory new" matches "AK-47 | Redline (Factory New)".
-    final tokens = query.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
-
-    final matches = <CS2Item>[];
-    for (final item in items) {
-      final hay = item.marketHashName.toLowerCase();
-      if (tokens.every(hay.contains)) {
-        matches.add(item);
-        if (matches.length >= _maxResults) break;
-      }
-    }
-
-    if (matches.isEmpty) {
+    if (filtered.isEmpty) {
       return const Center(
         child: Text(
           'No items match your search',
@@ -201,11 +437,11 @@ class _ResultList extends ConsumerWidget {
 
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: matches.length,
+      itemCount: filtered.length,
       cacheExtent: 500,
       itemBuilder: (context, i) => _SearchResultCard(
-        item: matches[i],
-        onTap: () => onTap(matches[i]),
+        item: filtered[i],
+        onTap: () => onTap(filtered[i]),
       ),
     );
   }
@@ -397,6 +633,269 @@ class _SearchResultCard extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Filter sheet ─────────────────────────────────────────────────
+
+class _SearchFilterSheet extends ConsumerWidget {
+  const _SearchFilterSheet();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final rarities = ref.watch(availableSearchRaritiesProvider);
+    final weaponTypes = ref.watch(availableSearchWeaponTypesProvider);
+    final wears = ref.watch(availableSearchWearsProvider);
+    final collections = ref.watch(availableSearchCollectionsProvider);
+
+    final currentRarity = ref.watch(searchRarityFilterProvider);
+    final currentWeapon = ref.watch(searchWeaponTypeFilterProvider);
+    final currentWear = ref.watch(searchWearFilterProvider);
+    final currentCollection = ref.watch(searchCollectionFilterProvider);
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      maxChildSize: 0.95,
+      minChildSize: 0.4,
+      builder: (context, scrollController) {
+        return SingleChildScrollView(
+          controller: scrollController,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[600],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Filters',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      ref.read(searchRarityFilterProvider.notifier).clear();
+                      ref.read(searchWeaponTypeFilterProvider.notifier).clear();
+                      ref.read(searchWearFilterProvider.notifier).clear();
+                      ref.read(searchCollectionFilterProvider.notifier).clear();
+                    },
+                    child: const Text('Clear All'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+
+              _sectionLabel('Rarity'),
+              _chipWrap(
+                options: rarities,
+                selected: currentRarity,
+                onToggle: (v) =>
+                    ref.read(searchRarityFilterProvider.notifier).toggle(v),
+                showRarityDot: true,
+              ),
+              const SizedBox(height: 12),
+
+              _sectionLabel('Category'),
+              _chipWrap(
+                options: weaponTypes,
+                selected: currentWeapon,
+                onToggle: (v) => ref
+                    .read(searchWeaponTypeFilterProvider.notifier)
+                    .toggle(v),
+              ),
+              const SizedBox(height: 12),
+
+              if (wears.isNotEmpty) ...[
+                _sectionLabel('Wear'),
+                _chipWrap(
+                  options: wears,
+                  selected: currentWear,
+                  onToggle: (v) =>
+                      ref.read(searchWearFilterProvider.notifier).toggle(v),
+                ),
+                const SizedBox(height: 12),
+              ],
+
+              _sectionLabel('Collection'),
+              InkWell(
+                onTap: () => _showCollectionPicker(context, collections),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    currentCollection.isEmpty
+                        ? 'All Collections'
+                        : '${currentCollection.length} selected',
+                    style: TextStyle(
+                      color: currentCollection.isEmpty
+                          ? Colors.grey[500]
+                          : Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: Colors.grey[400],
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+
+  Widget _chipWrap({
+    required List<String> options,
+    required Set<String> selected,
+    required void Function(String) onToggle,
+    bool showRarityDot = false,
+  }) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: options.map((opt) {
+        return FilterChip(
+          label: showRarityDot
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      margin: const EdgeInsets.only(right: 6),
+                      decoration: BoxDecoration(
+                        color: CS2Colors.fromRarity(opt),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    Text(opt, style: const TextStyle(fontSize: 12)),
+                  ],
+                )
+              : Text(opt, style: const TextStyle(fontSize: 12)),
+          selected: selected.contains(opt),
+          onSelected: (_) => onToggle(opt),
+          visualDensity: VisualDensity.compact,
+        );
+      }).toList(),
+    );
+  }
+
+  void _showCollectionPicker(BuildContext context, List<String> options) {
+    showDialog(
+      context: context,
+      builder: (_) => _SearchCollectionDialog(options: options),
+    );
+  }
+}
+
+class _SearchCollectionDialog extends ConsumerStatefulWidget {
+  final List<String> options;
+  const _SearchCollectionDialog({required this.options});
+
+  @override
+  ConsumerState<_SearchCollectionDialog> createState() =>
+      _SearchCollectionDialogState();
+}
+
+class _SearchCollectionDialogState
+    extends ConsumerState<_SearchCollectionDialog> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = ref.watch(searchCollectionFilterProvider);
+    final q = _query.toLowerCase();
+    final filtered = q.isEmpty
+        ? widget.options
+        : widget.options.where((c) => c.toLowerCase().contains(q)).toList();
+
+    return Dialog(
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      child: SizedBox(
+        width: double.maxFinite,
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search collections...',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                onChanged: (v) => setState(() => _query = v),
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: filtered.length,
+                itemBuilder: (context, i) {
+                  final name = filtered[i];
+                  return CheckboxListTile(
+                    title: Text(name, style: const TextStyle(fontSize: 14)),
+                    value: selected.contains(name),
+                    dense: true,
+                    onChanged: (_) => ref
+                        .read(searchCollectionFilterProvider.notifier)
+                        .toggle(name),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => ref
+                        .read(searchCollectionFilterProvider.notifier)
+                        .clear(),
+                    child: const Text('Clear'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Done'),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
