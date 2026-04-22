@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -77,6 +79,52 @@ class SearchCollectionFilterNotifier extends Notifier<Set<String>> {
   void clear() => state = {};
 }
 
+/// Quality filter: any subset of {'Normal', 'StatTrak', 'Souvenir'}.
+/// An empty set means "any quality". 'Normal' = not StatTrak and not
+/// Souvenir — non-skin items (stickers, cases, agents, etc.) fall into
+/// this bucket since they carry neither flag.
+final searchQualityFilterProvider =
+    NotifierProvider<SearchQualityFilterNotifier, Set<String>>(
+  SearchQualityFilterNotifier.new,
+);
+
+class SearchQualityFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+/// Sort options applicable to the Search catalog. 24h change and
+/// quantity don't apply (search items have no owned quantity, and
+/// catalog entries have no historical price state).
+enum SearchSortOption {
+  relevance('Catalog Order'),
+  priceDesc('Price: High to Low'),
+  priceAsc('Price: Low to High'),
+  csfloatDesc('CSFloat: High to Low'),
+  csfloatAsc('CSFloat: Low to High'),
+  savingsDesc('Best Deal (Steam vs CF)'),
+  savingsRevDesc('Best Deal (CF vs Steam)'),
+  nameAsc('Name: A-Z'),
+  nameDesc('Name: Z-A');
+
+  final String label;
+  const SearchSortOption(this.label);
+}
+
+final searchSortProvider =
+    NotifierProvider<SearchSortNotifier, SearchSortOption>(
+  SearchSortNotifier.new,
+);
+
+class SearchSortNotifier extends Notifier<SearchSortOption> {
+  @override
+  SearchSortOption build() => SearchSortOption.relevance;
+  void set(SearchSortOption v) => state = v;
+}
+
 // ── Derived option lists ─────────────────────────────────────────
 //
 // Options for each filter are computed from the loaded catalog so
@@ -134,9 +182,13 @@ List<CS2Item> _currentCatalogItems(Ref ref) {
   );
 }
 
-/// Filtered + capped result list. Returns an empty list when there's
-/// no query and no active filter — the UI falls back to "Recent" in
-/// that case.
+/// Filtered + sorted + capped result list. Returns an empty list when
+/// there's no query and no active filter — the UI falls back to
+/// "Recent" in that case.
+///
+/// Filter pass is uncapped so that sort operates on the full matching
+/// pool (otherwise a price-based sort could miss items). The cap is
+/// applied last, after sorting.
 final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
   final items = _currentCatalogItems(ref);
   final query = ref.watch(searchCatalogQueryProvider).trim().toLowerCase();
@@ -144,6 +196,9 @@ final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
   final weapon = ref.watch(searchWeaponTypeFilterProvider);
   final wear = ref.watch(searchWearFilterProvider);
   final collection = ref.watch(searchCollectionFilterProvider);
+  final quality = ref.watch(searchQualityFilterProvider);
+  final sort = ref.watch(searchSortProvider);
+  final prices = ref.watch(searchPricesProvider);
 
   final tokens =
       query.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
@@ -152,7 +207,8 @@ final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
       rarity.isEmpty &&
       weapon.isEmpty &&
       wear.isEmpty &&
-      collection.isEmpty;
+      collection.isEmpty &&
+      quality.isEmpty;
   if (noInput) return const [];
 
   final out = <CS2Item>[];
@@ -171,11 +227,95 @@ final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
       final c = item.collection;
       if (c == null || !collection.contains(c)) continue;
     }
+    if (quality.isNotEmpty) {
+      final q = item.isStatTrak
+          ? 'StatTrak'
+          : item.isSouvenir
+              ? 'Souvenir'
+              : 'Normal';
+      if (!quality.contains(q)) continue;
+    }
     out.add(item);
-    if (out.length >= _maxResults) break;
   }
+
+  _applySort(out, sort, prices);
+
+  if (out.length > _maxResults) return out.sublist(0, _maxResults);
   return out;
 });
+
+/// Sort helper. Items with missing prices sink to the bottom for
+/// price-based sorts so the user can still see prioritized results as
+/// prices stream in.
+void _applySort(
+  List<CS2Item> items,
+  SearchSortOption sort,
+  SearchPrices prices,
+) {
+  int cmpNullable(double? a, double? b, {required bool desc}) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return desc ? b.compareTo(a) : a.compareTo(b);
+  }
+
+  double? savings(CS2Item i, {required bool reverse}) {
+    final s = prices.steam[i.marketHashName];
+    final c = prices.csfloat[i.marketHashName];
+    if (s == null || c == null) return null;
+    if (reverse) {
+      if (c <= 0) return null;
+      return (c - s) / c;
+    }
+    if (s <= 0) return null;
+    return (s - c) / s;
+  }
+
+  switch (sort) {
+    case SearchSortOption.relevance:
+      break;
+    case SearchSortOption.priceDesc:
+      items.sort((a, b) => cmpNullable(
+            prices.steam[a.marketHashName],
+            prices.steam[b.marketHashName],
+            desc: true,
+          ));
+    case SearchSortOption.priceAsc:
+      items.sort((a, b) => cmpNullable(
+            prices.steam[a.marketHashName],
+            prices.steam[b.marketHashName],
+            desc: false,
+          ));
+    case SearchSortOption.csfloatDesc:
+      items.sort((a, b) => cmpNullable(
+            prices.csfloat[a.marketHashName],
+            prices.csfloat[b.marketHashName],
+            desc: true,
+          ));
+    case SearchSortOption.csfloatAsc:
+      items.sort((a, b) => cmpNullable(
+            prices.csfloat[a.marketHashName],
+            prices.csfloat[b.marketHashName],
+            desc: false,
+          ));
+    case SearchSortOption.savingsDesc:
+      items.sort((a, b) => cmpNullable(
+            savings(a, reverse: false),
+            savings(b, reverse: false),
+            desc: true,
+          ));
+    case SearchSortOption.savingsRevDesc:
+      items.sort((a, b) => cmpNullable(
+            savings(a, reverse: true),
+            savings(b, reverse: true),
+            desc: true,
+          ));
+    case SearchSortOption.nameAsc:
+      items.sort((a, b) => a.marketHashName.compareTo(b.marketHashName));
+    case SearchSortOption.nameDesc:
+      items.sort((a, b) => b.marketHashName.compareTo(a.marketHashName));
+  }
+}
 
 /// Max number of rows to render at once — prevents the ListView
 /// from trying to build 30k+ widgets when the query is very short.
@@ -190,6 +330,7 @@ class SearchScreen extends ConsumerStatefulWidget {
 
 class _SearchScreenState extends ConsumerState<SearchScreen> {
   late final TextEditingController _controller;
+  Timer? _fetchTimer;
 
   @override
   void initState() {
@@ -201,15 +342,35 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   @override
   void dispose() {
+    _fetchTimer?.cancel();
     _controller.dispose();
     super.dispose();
+  }
+
+  /// Fetch prices for the current filtered list. Bails if empty or
+  /// over the auto-fetch cap. Called on Enter submit and (debounced)
+  /// on filter changes.
+  void _triggerFetch() {
+    _fetchTimer?.cancel();
+    if (!mounted) return;
+    final results = ref.read(filteredSearchResultsProvider);
+    if (results.isEmpty) return;
+    if (results.length > searchPriceAutoFetchCap) return;
+    ref.read(searchPricesProvider.notifier).fetchForItems(results);
+  }
+
+  void _scheduleFetch(
+      [Duration delay = const Duration(milliseconds: 500)]) {
+    _fetchTimer?.cancel();
+    _fetchTimer = Timer(delay, _triggerFetch);
   }
 
   bool _hasActiveFilters() {
     return ref.read(searchRarityFilterProvider).isNotEmpty ||
         ref.read(searchWeaponTypeFilterProvider).isNotEmpty ||
         ref.read(searchWearFilterProvider).isNotEmpty ||
-        ref.read(searchCollectionFilterProvider).isNotEmpty;
+        ref.read(searchCollectionFilterProvider).isNotEmpty ||
+        ref.read(searchQualityFilterProvider).isNotEmpty;
   }
 
   void _showFilterSheet() {
@@ -234,15 +395,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     ref.watch(searchWeaponTypeFilterProvider);
     ref.watch(searchWearFilterProvider);
     ref.watch(searchCollectionFilterProvider);
+    ref.watch(searchQualityFilterProvider);
+    final currentSort = ref.watch(searchSortProvider);
 
-    // Whenever the filtered list updates and is small enough, kick off
-    // price fetches for the visible items. The notifier dedupes against
-    // already-cached items so this is cheap for repeated narrow queries.
-    ref.listen<List<CS2Item>>(filteredSearchResultsProvider, (_, next) {
-      if (next.isEmpty) return;
-      if (next.length > searchPriceAutoFetchCap) return;
-      ref.read(searchPricesProvider.notifier).fetchForItems(next);
-    });
+    // Trigger a price fetch only when the user commits a filter
+    // change — not on every keystroke. Typing "bolt" matches lots of
+    // Boltz stickers, and we don't want to burn API calls on those.
+    // Enter submit on the TextField below also calls _triggerFetch
+    // immediately.
+    ref.listen(searchRarityFilterProvider, (_, _) => _scheduleFetch());
+    ref.listen(searchWeaponTypeFilterProvider, (_, _) => _scheduleFetch());
+    ref.listen(searchWearFilterProvider, (_, _) => _scheduleFetch());
+    ref.listen(searchCollectionFilterProvider, (_, _) => _scheduleFetch());
+    ref.listen(searchQualityFilterProvider, (_, _) => _scheduleFetch());
 
     return Scaffold(
       appBar: AppBar(
@@ -256,6 +421,27 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ),
             tooltip: 'Filters',
             onPressed: catalogAsync.isLoading ? null : _showFilterSheet,
+          ),
+          PopupMenuButton<SearchSortOption>(
+            icon: const Icon(Icons.sort),
+            tooltip: 'Sort',
+            onSelected: (o) =>
+                ref.read(searchSortProvider.notifier).set(o),
+            itemBuilder: (_) => SearchSortOption.values.map((o) {
+              return PopupMenuItem(
+                value: o,
+                child: Row(
+                  children: [
+                    if (o == currentSort)
+                      const Icon(Icons.check, size: 18)
+                    else
+                      const SizedBox(width: 18),
+                    const SizedBox(width: 8),
+                    Text(o.label),
+                  ],
+                ),
+              );
+            }).toList(),
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -278,10 +464,12 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             child: TextField(
               controller: _controller,
               autofocus: false,
+              textInputAction: TextInputAction.search,
               onChanged: (v) =>
                   ref.read(searchCatalogQueryProvider.notifier).set(v),
+              onSubmitted: (_) => _triggerFetch(),
               decoration: InputDecoration(
-                hintText: 'Search any CS2 item...',
+                hintText: 'Search any CS2 item, then press Search',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _controller.text.isNotEmpty
                     ? IconButton(
@@ -382,6 +570,7 @@ class _ActiveFilterChipsRow extends ConsumerWidget {
     final weapon = ref.watch(searchWeaponTypeFilterProvider);
     final wear = ref.watch(searchWearFilterProvider);
     final collection = ref.watch(searchCollectionFilterProvider);
+    final quality = ref.watch(searchQualityFilterProvider);
 
     final chips = <Widget>[];
     void addChips(Set<String> values, void Function(String) onDelete) {
@@ -398,6 +587,8 @@ class _ActiveFilterChipsRow extends ConsumerWidget {
       }
     }
 
+    addChips(quality,
+        (v) => ref.read(searchQualityFilterProvider.notifier).toggle(v));
     addChips(rarity,
         (v) => ref.read(searchRarityFilterProvider.notifier).toggle(v));
     addChips(weapon,
@@ -802,6 +993,7 @@ class _SearchFilterSheet extends ConsumerWidget {
     final currentWeapon = ref.watch(searchWeaponTypeFilterProvider);
     final currentWear = ref.watch(searchWearFilterProvider);
     final currentCollection = ref.watch(searchCollectionFilterProvider);
+    final currentQuality = ref.watch(searchQualityFilterProvider);
 
     return DraggableScrollableSheet(
       expand: false,
@@ -840,12 +1032,22 @@ class _SearchFilterSheet extends ConsumerWidget {
                       ref.read(searchWeaponTypeFilterProvider.notifier).clear();
                       ref.read(searchWearFilterProvider.notifier).clear();
                       ref.read(searchCollectionFilterProvider.notifier).clear();
+                      ref.read(searchQualityFilterProvider.notifier).clear();
                     },
                     child: const Text('Clear All'),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
+
+              _sectionLabel('Quality'),
+              _chipWrap(
+                options: const ['Normal', 'StatTrak', 'Souvenir'],
+                selected: currentQuality,
+                onToggle: (v) =>
+                    ref.read(searchQualityFilterProvider.notifier).toggle(v),
+              ),
+              const SizedBox(height: 12),
 
               _sectionLabel('Rarity'),
               _chipWrap(

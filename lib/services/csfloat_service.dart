@@ -7,6 +7,31 @@ import 'package:path_provider/path_provider.dart';
 
 import 'price_service.dart' show PriceFetchProgress;
 
+/// Snapshot of CSFloat's rate-limit headers from the most recent
+/// response. Callers can consult [CsfloatService.lastRateLimit] before
+/// the next call to throttle precisely instead of guessing.
+class CsfloatRateLimit {
+  final int limit;
+  final int remaining;
+  final DateTime reset;
+
+  const CsfloatRateLimit({
+    required this.limit,
+    required this.remaining,
+    required this.reset,
+  });
+
+  /// How long until the window resets. Zero if already past.
+  Duration timeUntilReset([DateTime? now]) {
+    final diff = reset.difference(now ?? DateTime.now());
+    return diff.isNegative ? Duration.zero : diff;
+  }
+
+  @override
+  String toString() =>
+      'CsfloatRateLimit(remaining=$remaining/$limit, reset=$reset)';
+}
+
 /// Fetches the lowest listing price for items on CSFloat Market.
 ///
 /// CSFloat is a peer-to-peer marketplace — prices represent what
@@ -25,7 +50,29 @@ class CsfloatService {
 
   final String? apiKey;
 
+  CsfloatRateLimit? _lastRateLimit;
+
+  /// The rate-limit state CSFloat reported in the most recent response.
+  /// Null until the first request returns. The search drainer reads
+  /// this before each call and waits until [CsfloatRateLimit.reset]
+  /// when [CsfloatRateLimit.remaining] gets low.
+  CsfloatRateLimit? get lastRateLimit => _lastRateLimit;
+
   CsfloatService({this.apiKey});
+
+  /// Parse the x-ratelimit-* headers (present on every CSFloat response,
+  /// including 429s and 405s) into [_lastRateLimit].
+  void _parseRateLimitHeaders(http.Response r) {
+    final limit = int.tryParse(r.headers['x-ratelimit-limit'] ?? '');
+    final remaining = int.tryParse(r.headers['x-ratelimit-remaining'] ?? '');
+    final resetEpoch = int.tryParse(r.headers['x-ratelimit-reset'] ?? '');
+    if (limit == null || remaining == null || resetEpoch == null) return;
+    _lastRateLimit = CsfloatRateLimit(
+      limit: limit,
+      remaining: remaining,
+      reset: DateTime.fromMillisecondsSinceEpoch(resetEpoch * 1000),
+    );
+  }
 
   /// Fetches the lowest listing price for a single item on CSFloat.
   ///
@@ -46,11 +93,20 @@ class CsfloatService {
       }
 
       final response = await http.get(uri, headers: headers);
+      _parseRateLimitHeaders(response);
 
       if (response.statusCode == 429) {
-        debugPrint('CSF 429 RATE LIMITED: $marketHashName — retrying in 5s');
-        await Future.delayed(const Duration(seconds: 5));
+        // Wait exactly until the server says the bucket refills (capped
+        // to keep UI responsive), then retry once.
+        final wait = _lastRateLimit?.timeUntilReset() ?? const Duration(seconds: 5);
+        final clamped = Duration(
+          seconds: wait.inSeconds.clamp(2, 120),
+        );
+        debugPrint('CSF 429 RATE LIMITED: $marketHashName — '
+            'waiting ${clamped.inSeconds}s until reset');
+        await Future.delayed(clamped);
         final retry = await http.get(uri, headers: headers);
+        _parseRateLimitHeaders(retry);
         if (retry.statusCode == 200) {
           final price = _parsePriceFromResponse(retry.body);
           debugPrint('CSF RETRY ${price != null ? "OK \$${price.toStringAsFixed(2)}" : "NO LISTING"}: $marketHashName');

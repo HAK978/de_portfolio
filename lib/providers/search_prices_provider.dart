@@ -114,6 +114,12 @@ class SearchPricesNotifier extends Notifier<SearchPrices> {
 
   Future<void> _drainSteam() async {
     _steamBusy = true;
+    // Yield once so the first state mutation below doesn't happen in
+    // the same synchronous update cycle as the trigger. Without this,
+    // filteredSearchResultsProvider (which watches our state) can end
+    // up being rebuilt twice in the same frame → "rebuilt multiple
+    // times in the same frame" assertion.
+    await Future<void>.delayed(Duration.zero);
     final service = ref.read(priceServiceProvider);
     while (_steamQueue.isNotEmpty && !_disposed) {
       final name = _steamQueue.removeAt(0);
@@ -144,8 +150,26 @@ class SearchPricesNotifier extends Notifier<SearchPrices> {
 
   Future<void> _drainCsfloat() async {
     _csfloatBusy = true;
+    await Future<void>.delayed(Duration.zero);
     final service = ref.read(csfloatServiceProvider);
     while (_csfloatQueue.isNotEmpty && !_disposed) {
+      // Preflight throttle: if CSFloat told us we're nearly out of
+      // budget, wait until the bucket refills instead of blindly
+      // firing and getting 429'd.
+      final rl = service.lastRateLimit;
+      if (rl != null && rl.remaining <= 2) {
+        final wait = rl.timeUntilReset();
+        if (wait > Duration.zero) {
+          final clamped = Duration(
+            seconds: (wait.inSeconds + 1).clamp(1, 120),
+          );
+          debugPrint('CSF preflight: remaining=${rl.remaining}, '
+              'waiting ${clamped.inSeconds}s until reset');
+          await Future.delayed(clamped);
+          if (_disposed) return;
+        }
+      }
+
       final name = _csfloatQueue.removeAt(0);
       if (state.csfloat.containsKey(name)) continue;
       try {
@@ -158,7 +182,9 @@ class SearchPricesNotifier extends Notifier<SearchPrices> {
         debugPrint('searchPrices CF error $name: $e');
       }
       if (_csfloatQueue.isNotEmpty) {
-        await Future.delayed(const Duration(seconds: 1));
+        // Tiny spacing between calls — real pacing is driven by the
+        // header-aware preflight above.
+        await Future.delayed(const Duration(milliseconds: 200));
       }
     }
     _csfloatBusy = false;
