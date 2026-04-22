@@ -20,6 +20,28 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 - `lib/app.dart` — added `/search/item` sub-route (same pattern as `/storage/item`, accepts CS2Item via `state.extra`)
 - CS2Item field `location == 'search'` is the marker for catalog entries (triggers auto-fetch)
 
+#### Per-row prices on search results + explicit-submit fetching
+- `lib/providers/search_prices_provider.dart` — in-memory `{marketHashName → steam?, csfloat?}` map with `loading` set. Seeds from the shared `price_cache.json` / `csfloat_price_cache.json` on first use so inventory-priced items show immediately. Single-flight drainers (one for Steam search/render, one for CSFloat) respect rate limits; queue re-clears when the input list changes
+- Search `_SearchResultCard` renamed to ConsumerWidget, uses `select`-scoped watches so only that row rebuilds when its prices arrive (not all 50 rows)
+- Banner above results when count > 50: "Narrow filters to see live prices" (auto-fetch cap)
+- Tapping a result now carries cached prices through to the detail screen via `copyWith` on `extra`; detail screen skips auto-fetch when `currentPrice > 0 || csfloatPrice != null`
+- Prices are fetched ONLY on explicit user intent: keyboard Search key (TextInputAction.search + onSubmitted) or filter-panel change (debounced 500ms via Timer). Typing in the box no longer fires anything — avoids burning API on "bolt" → Boltz sticker partials
+- Fix: "Provider<List<CS2Item>> rebuilt multiple times in same frame" crash — was caused by drainers mutating searchPrices state synchronously while filteredSearchResultsProvider (which watches it) was mid-rebuild. Drainers now `await Future<void>.delayed(Duration.zero)` at start so state updates land in a separate microtask
+
+#### Search sort + filter expansions
+- `SearchSortOption` enum: relevance (default), price/CF high↔low, Best Deal Steam-vs-CF / CF-vs-Steam, name A↔Z. 24h-change and quantity omitted (no meaning for catalog)
+- `searchQualityFilterProvider`: multi-select Normal / StatTrak / Souvenir. "Normal" = not StatTrak and not Souvenir (non-skin items like stickers/cases/agents fall into this bucket)
+- Sort dropdown in app bar (PopupMenuButton<SearchSortOption>); price-based sorts watch `searchPricesProvider` so items reshuffle live as prices arrive; items with missing prices sink to bottom
+- `filteredSearchResultsProvider` filter pass is uncapped — sort operates on the full matching pool before the 200-item UI cap
+
+#### CSFloat rate-limit header handling
+- `CsfloatRateLimit` class: parses `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-reset` (unix epoch) from every CSFloat response (200, 429, or any other status)
+- `CsfloatService.lastRateLimit` getter exposes the latest snapshot to callers
+- 429 path now sleeps exactly `timeUntilReset()` seconds (clamped 2-120s) instead of a fixed 5s guess
+- Search drainer preflight: before each call, if `remaining <= 2`, waits until `reset + 1s` before firing — precision throttling replaces prior heuristic exponential-backoff
+- Inter-call delay reduced from 1s to 200ms since real pacing is header-driven now
+- Applies only to CSFloat. Steam's priceoverview endpoint doesn't return comparable headers, so its path still uses the fixed 5s retry
+
 #### Search detail: refresh + history
 - Refresh icon in app bar on search item detail re-runs Steam + CSFloat fetch (disabled while in flight)
 - `lib/providers/search_history_provider.dart` — Notifier persists last 20 market_hash_names to `search_history.json`. Tapping a search result records it; empty-query state shows "Recent" list with per-entry X and Clear All. History entries that no longer resolve in the catalog are silently skipped
