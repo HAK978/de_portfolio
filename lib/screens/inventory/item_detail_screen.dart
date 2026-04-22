@@ -5,19 +5,74 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../models/cs2_item.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
+import '../../providers/price_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/price_change_badge.dart';
 import '../../widgets/price_chart.dart';
 
-class ItemDetailScreen extends ConsumerWidget {
+class ItemDetailScreen extends ConsumerStatefulWidget {
   final String itemId;
   final CS2Item? passedItem;
   const ItemDetailScreen({super.key, required this.itemId, this.passedItem});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Use passed item (storage) or look up from inventory
-    CS2Item? item = passedItem;
+  ConsumerState<ItemDetailScreen> createState() => _ItemDetailScreenState();
+}
+
+class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
+  CS2Item? _enriched;
+  bool _fetchingPrices = false;
+  String? _fetchError;
+
+  @override
+  void initState() {
+    super.initState();
+    // Catalog-search items arrive with price 0 — fetch Steam + CSFloat now.
+    final p = widget.passedItem;
+    if (p != null && p.location == 'search') {
+      _fetchingPrices = true;
+      // Can't call ref.read in initState before first build completes;
+      // defer to the next frame so the providers are ready.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPrices(p));
+    }
+  }
+
+  Future<void> _fetchPrices(CS2Item item) async {
+    try {
+      final priceService = ref.read(priceServiceProvider);
+      final csfloatService = ref.read(csfloatServiceProvider);
+
+      // Use search/render instead of priceoverview — priceoverview
+      // routinely returns "not listed" for items that have live
+      // listings (it only reflects items with *recent sales*).
+      final steamFuture = priceService.fetchPriceViaSearch(item.marketHashName);
+      final csfloatFuture = csfloatService.fetchPrice(item.marketHashName);
+
+      final steamMatch = await steamFuture;
+      final csfloatPrice = await csfloatFuture;
+
+      if (!mounted) return;
+
+      setState(() {
+        _enriched = item.copyWith(
+          currentPrice: steamMatch?.price ?? 0.0,
+          csfloatPrice: csfloatPrice,
+        );
+        _fetchingPrices = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _fetchingPrices = false;
+        _fetchError = e.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Priority: freshly-fetched enriched item > passed item > inventory lookup
+    CS2Item? item = _enriched ?? widget.passedItem;
     if (item == null) {
       final itemsAsync = ref.watch(inventoryProvider);
       final items = itemsAsync.when(
@@ -25,7 +80,7 @@ class ItemDetailScreen extends ConsumerWidget {
         loading: () => <CS2Item>[],
         error: (_, _) => <CS2Item>[],
       );
-      item = items.where((i) => i.id == itemId).firstOrNull;
+      item = items.where((i) => i.id == widget.itemId).firstOrNull;
     }
 
     if (item == null) {
@@ -36,6 +91,7 @@ class ItemDetailScreen extends ConsumerWidget {
     }
 
     final rarityColor = CS2Colors.fromRarity(item.rarity);
+    final isSearchItem = item.location == 'search';
 
     return Scaffold(
       appBar: AppBar(title: Text(item.name)),
@@ -107,7 +163,7 @@ class ItemDetailScreen extends ConsumerWidget {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Text(
-                    'StatTrak\u2122',
+                    'StatTrak™',
                     style: TextStyle(
                       color: Colors.orange,
                       fontSize: 12,
@@ -123,49 +179,9 @@ class ItemDetailScreen extends ConsumerWidget {
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Steam Market',
-                    style: TextStyle(color: Colors.grey[400], fontSize: 14),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '\$${item.currentPrice.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  if (item.csfloatPrice != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      'CSFloat',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 14),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '\$${item.csfloatPrice!.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.blueAccent[100],
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      _PriceChangeColumn(label: '24h', percentage: item.priceChange24h),
-                      const SizedBox(width: 24),
-                      _PriceChangeColumn(label: '7d', percentage: item.priceChange7d),
-                      const SizedBox(width: 24),
-                      _PriceChangeColumn(label: '30d', percentage: item.priceChange30d),
-                    ],
-                  ),
-                ],
-              ),
+              child: _fetchingPrices
+                  ? _priceLoadingBlock()
+                  : _priceBlock(item, showNotListed: isSearchItem),
             ),
           ),
           const SizedBox(height: 12),
@@ -183,19 +199,23 @@ class ItemDetailScreen extends ConsumerWidget {
                     _DetailRow(label: 'Float', value: item.floatValue!.toStringAsFixed(6)),
                   if (item.collection != null && item.collection!.isNotEmpty)
                     _DetailRow(label: 'Collection', value: item.collection!),
-                  _DetailRow(label: 'Quantity', value: '${item.quantity}'),
-                  _DetailRow(label: 'Location', value: item.location),
-                  if (item.quantity > 1)
-                    _DetailRow(
-                      label: 'Total Value',
-                      value: '\$${(item.currentPrice * item.quantity).toStringAsFixed(2)}',
-                    ),
+                  // Hide quantity / location / total-value rows for search items —
+                  // they represent the catalog entry, not something the user owns.
+                  if (!isSearchItem) ...[
+                    _DetailRow(label: 'Quantity', value: '${item.quantity}'),
+                    _DetailRow(label: 'Location', value: item.location),
+                    if (item.quantity > 1)
+                      _DetailRow(
+                        label: 'Total Value',
+                        value: '\$${(item.currentPrice * item.quantity).toStringAsFixed(2)}',
+                      ),
+                  ],
                 ],
               ),
             ),
           ),
-          // Individual floats for grouped items
-          if (item.individualFloats.length > 1) ...[
+          // Individual floats for grouped items (inventory/storage only)
+          if (!isSearchItem && item.individualFloats.length > 1) ...[
             const SizedBox(height: 12),
             Card(
               child: Padding(
@@ -225,6 +245,87 @@ class ItemDetailScreen extends ConsumerWidget {
           _PriceHistorySection(marketHashName: item.marketHashName),
         ],
       ),
+    );
+  }
+
+  Widget _priceLoadingBlock() {
+    return Row(
+      children: [
+        const SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          'Fetching Steam + CSFloat prices...',
+          style: TextStyle(color: Colors.grey[300]),
+        ),
+      ],
+    );
+  }
+
+  Widget _priceBlock(CS2Item item, {required bool showNotListed}) {
+    // For search items where both prices failed to come back, say so
+    // explicitly instead of rendering "$0.00".
+    final steamMissing = showNotListed && item.currentPrice <= 0;
+    final showCsfloat = item.csfloatPrice != null || showNotListed;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Steam Market',
+          style: TextStyle(color: Colors.grey[400], fontSize: 14),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          steamMissing ? 'Not listed' : '\$${item.currentPrice.toStringAsFixed(2)}',
+          style: TextStyle(
+            fontSize: steamMissing ? 16 : 28,
+            fontWeight: FontWeight.w800,
+            color: steamMissing ? Colors.grey[500] : null,
+          ),
+        ),
+        if (showCsfloat) ...[
+          const SizedBox(height: 12),
+          Text(
+            'CSFloat',
+            style: TextStyle(color: Colors.grey[400], fontSize: 14),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            item.csfloatPrice != null
+                ? '\$${item.csfloatPrice!.toStringAsFixed(2)}'
+                : 'No listings',
+            style: TextStyle(
+              fontSize: item.csfloatPrice != null ? 22 : 16,
+              fontWeight: FontWeight.w700,
+              color: item.csfloatPrice != null
+                  ? Colors.blueAccent[100]
+                  : Colors.grey[500],
+            ),
+          ),
+        ],
+        if (_fetchError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Fetch error: $_fetchError',
+            style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+          ),
+        ],
+        if (!showNotListed) ...[
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              _PriceChangeColumn(label: '24h', percentage: item.priceChange24h),
+              const SizedBox(width: 24),
+              _PriceChangeColumn(label: '7d', percentage: item.priceChange7d),
+              const SizedBox(width: 24),
+              _PriceChangeColumn(label: '30d', percentage: item.priceChange30d),
+            ],
+          ),
+        ],
+      ],
     );
   }
 }

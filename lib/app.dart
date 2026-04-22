@@ -105,6 +105,18 @@ final goRouter = GoRouter(
         GoRoute(
           path: '/search',
           builder: (context, state) => const SearchScreen(),
+          routes: [
+            GoRoute(
+              path: 'item',
+              builder: (context, state) {
+                final item = state.extra as CS2Item;
+                return ItemDetailScreen(
+                  itemId: item.marketHashName,
+                  passedItem: item,
+                );
+              },
+            ),
+          ],
         ),
         GoRoute(
           path: '/settings',

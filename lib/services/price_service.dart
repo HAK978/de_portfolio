@@ -217,6 +217,31 @@ class PriceService {
     }
   }
 
+  /// Fetches the current lowest listing for a single item via search/render.
+  ///
+  /// More reliable than [fetchPrice] (priceoverview) — priceoverview can
+  /// return success=false or null prices for items with recent sales only.
+  /// search/render reads the live listings directly. Used by the Search
+  /// tab to show real prices for catalog items.
+  Future<MarketItemResult?> fetchPriceViaSearch(String marketHashName) async {
+    try {
+      final query = '"$marketHashName"';
+      final batch = await _searchRender(query, count: 10);
+      final match = batch.where((r) => r.hashName == marketHashName).firstOrNull
+          ?? batch
+              .where((r) =>
+                  r.hashName.toLowerCase() == marketHashName.toLowerCase())
+              .firstOrNull;
+      if (match == null) {
+        debugPrint('search/render: no match for "$marketHashName" (${batch.length} results)');
+      }
+      return match;
+    } catch (e) {
+      debugPrint('fetchPriceViaSearch error for "$marketHashName": $e');
+      return null;
+    }
+  }
+
   /// Builds a full Steam CDN image URL from an icon_url hash.
   static String buildImageUrl(String iconUrl) => '$_imageBase$iconUrl';
 

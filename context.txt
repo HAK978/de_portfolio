@@ -12,6 +12,25 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 
 ### What was built/changed this session
 
+#### Search feature (Phase: Search tab)
+- `lib/services/cs2_database_service.dart` — fetches ByMykel/CSGO-API endpoints in parallel (skins, stickers, crates, agents, patches, keychains, collectibles, music kits, graffiti), expands each skin into one CS2Item per (wear × StatTrak × Souvenir) variant, caches combined catalog to `cs2_database_cache.json` (version 1, 30-day TTL)
+- `lib/providers/cs2_database_provider.dart` — AsyncNotifierProvider with `refresh()` that bypasses cache
+- `lib/screens/search/search_screen.dart` (rewrite) — text field with tokenized substring match (order-independent: "redline factory new" matches "AK-47 | Redline (Factory New)"), 200-result cap, slim result card showing image + rarity border + weaponType. Refresh icon in app bar re-downloads catalog
+- `lib/screens/inventory/item_detail_screen.dart` (rewrite to ConsumerStatefulWidget) — when `item.location == 'search'`, auto-fetches Steam + CSFloat prices in parallel via `WidgetsBinding.addPostFrameCallback`. Shows spinner while fetching. Hides quantity/location/totals rows for catalog entries. "No listings"/"Not listed" for items with no market data
+- `lib/app.dart` — added `/search/item` sub-route (same pattern as `/storage/item`, accepts CS2Item via `state.extra`)
+- CS2Item field `location == 'search'` is the marker for catalog entries (triggers auto-fetch)
+
+#### Steam search/render for catalog prices
+- Added `PriceService.fetchPriceViaSearch(marketHashName)` → returns `MarketItemResult?`
+- Uses the search/render endpoint (not priceoverview) — priceoverview routinely returns success=false or null prices for items that DO have live listings (it only reflects items with recent sales)
+- Search-tab detail screen uses this method; inventory fetch still uses priceoverview (batch-friendly)
+
+#### Storage screen missing sort case
+- Added `SortOption.savingsRevDesc` case to the sort switch in `storage_screen.dart` (was missing after the previous commit that introduced the enum value — caused a non-exhaustive-switch compile error)
+
+#### 'Best Deal (CF vs Steam)' sort
+- New `SortOption.savingsRevDesc` sort in inventory screen — reverse of the existing `savingsDesc`: items where CSFloat price exceeds Steam price by the biggest % margin (buy on Steam, sell on CF)
+
 #### Bottom nav: Search replaces Settings
 - `app.dart` bottom nav destinations now: Home, Inventory, Storage, Search (Settings removed)
 - `/search` route added, pointing to new `lib/screens/search/search_screen.dart` placeholder

@@ -160,6 +160,16 @@ List<CS2Item> _applyFilters(
             : -1.0;
         return savB.compareTo(savA);
       });
+    case SortOption.savingsRevDesc:
+      filtered.sort((a, b) {
+        final savA = (a.csfloatPrice != null && a.csfloatPrice! > 0)
+            ? (a.csfloatPrice! - a.currentPrice) / a.csfloatPrice!
+            : -1.0;
+        final savB = (b.csfloatPrice != null && b.csfloatPrice! > 0)
+            ? (b.csfloatPrice! - b.currentPrice) / b.csfloatPrice!
+            : -1.0;
+        return savB.compareTo(savA);
+      });
     case SortOption.nameAsc:
       filtered.sort((a, b) => a.name.compareTo(b.name));
     case SortOption.quantityDesc:
