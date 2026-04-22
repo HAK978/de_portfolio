@@ -314,17 +314,41 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
             style: TextStyle(color: Colors.grey[400], fontSize: 14),
           ),
           const SizedBox(height: 4),
-          Text(
-            item.csfloatPrice != null
-                ? '\$${item.csfloatPrice!.toStringAsFixed(2)}'
-                : 'No listings',
-            style: TextStyle(
-              fontSize: item.csfloatPrice != null ? 22 : 16,
-              fontWeight: FontWeight.w700,
-              color: item.csfloatPrice != null
-                  ? Colors.blueAccent[100]
-                  : Colors.grey[500],
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                item.csfloatPrice != null
+                    ? '\$${item.csfloatPrice!.toStringAsFixed(2)}'
+                    : 'No listings',
+                style: TextStyle(
+                  fontSize: item.csfloatPrice != null ? 22 : 16,
+                  fontWeight: FontWeight.w700,
+                  color: item.csfloatPrice != null
+                      ? Colors.blueAccent[100]
+                      : Colors.grey[500],
+                ),
+              ),
+              if (item.csfloatPrice != null && item.currentPrice > 0) ...[
+                const SizedBox(width: 10),
+                Builder(builder: (_) {
+                  final cf = item.csfloatPrice!;
+                  final cheaper = cf < item.currentPrice;
+                  final pct = cheaper
+                      ? (1 - cf / item.currentPrice) * 100
+                      : (cf / item.currentPrice - 1) * 100;
+                  return Text(
+                    '${cheaper ? '-' : '+'}${pct.toStringAsFixed(1)}% vs Steam',
+                    style: TextStyle(
+                      color: cheaper ? Colors.greenAccent : Colors.redAccent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  );
+                }),
+              ],
+            ],
           ),
         ],
         if (_fetchError != null) ...[
