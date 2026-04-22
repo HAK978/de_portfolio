@@ -137,6 +137,7 @@ enum SortOption {
   csfloatDesc('CSFloat: High to Low'),
   csfloatAsc('CSFloat: Low to High'),
   savingsDesc('Best Deal (Steam vs CF)'),
+  savingsRevDesc('Best Deal (CF vs Steam)'),
   nameAsc('Name: A-Z'),
   quantityDesc('Quantity: Most'),
   changeDesc('24h Change: Best');
@@ -197,6 +198,18 @@ final filteredInventoryProvider = Provider<List<CS2Item>>((ref) {
             : -1.0;
         final savB = (b.csfloatPrice != null && b.currentPrice > 0)
             ? (b.currentPrice - b.csfloatPrice!) / b.currentPrice
+            : -1.0;
+        return savB.compareTo(savA);
+      });
+    case SortOption.savingsRevDesc:
+      // Reverse: CF higher than Steam — buy Steam, sell CF.
+      // Sort by biggest % margin: (csfloat - steam) / csfloat
+      filtered.sort((a, b) {
+        final savA = (a.csfloatPrice != null && a.csfloatPrice! > 0)
+            ? (a.csfloatPrice! - a.currentPrice) / a.csfloatPrice!
+            : -1.0;
+        final savB = (b.csfloatPrice != null && b.csfloatPrice! > 0)
+            ? (b.csfloatPrice! - b.currentPrice) / b.csfloatPrice!
             : -1.0;
         return savB.compareTo(savA);
       });
