@@ -63,6 +63,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             'CS2 Portfolio',
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: 'Settings',
+              onPressed: () => context.push('/settings'),
+            ),
+          ],
         ),
         body: Center(
           child: Padding(
@@ -91,7 +98,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
                 const SizedBox(height: 12),
                 TextButton(
-                  onPressed: () => context.go('/settings'),
+                  onPressed: () => context.push('/settings'),
                   child: const Text('Or enter Steam ID manually'),
                 ),
               ],
@@ -110,6 +117,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             'CS2 Portfolio',
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: 'Settings',
+              onPressed: () => context.push('/settings'),
+            ),
+          ],
         ),
         body: Center(
           child: Column(
@@ -125,10 +139,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
               if (fetchProgress.itemsFetched > 0) ...[
                 const SizedBox(height: 8),
-                Text(
-                  'Page ${fetchProgress.pagesFetched} (~75 items per page)',
-                  style: TextStyle(color: Colors.grey[400], fontSize: 13),
-                ),
+                Builder(builder: (_) {
+                  final total = fetchProgress.totalPages;
+                  return Text(
+                    total != null
+                        ? 'Page ${fetchProgress.pagesFetched}/$total (~75 items per page)'
+                        : 'Page ${fetchProgress.pagesFetched} (~75 items per page)',
+                    style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                  );
+                }),
               ],
             ],
           ),
@@ -140,6 +159,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             'CS2 Portfolio',
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: 'Settings',
+              onPressed: () => context.push('/settings'),
+            ),
+          ],
         ),
         body: Center(
           child: Padding(
@@ -216,6 +242,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           'CS2 Portfolio',
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: () => context.push('/settings'),
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

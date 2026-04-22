@@ -9,15 +9,19 @@ import 'package:path_provider/path_provider.dart';
 import '../models/cs2_item.dart';
 
 /// Progress update emitted during inventory fetch.
+/// [totalPages] is null until the first page response is parsed
+/// (it's derived from Steam's `total_inventory_count` field).
 class InventoryFetchProgress {
   final int itemsFetched;
   final int pagesFetched;
+  final int? totalPages;
   final bool hasMore;
 
   const InventoryFetchProgress({
     required this.itemsFetched,
     required this.pagesFetched,
     required this.hasMore,
+    this.totalPages,
   });
 }
 
@@ -40,19 +44,36 @@ class SteamApiService {
   /// Set by the provider before calling fetchInventory.
   void Function(InventoryFetchProgress)? onProgress;
 
+  /// Set by [cancelFetch] to stop the fetch loop between pages.
+  /// Inspect via [wasCancelled] after the call returns.
+  bool _cancelRequested = false;
+
+  bool get wasCancelled => _cancelRequested;
+
+  /// Signal the running fetch to stop after its current page.
+  /// No-op if no fetch is in progress.
+  void cancelFetch() {
+    _cancelRequested = true;
+  }
+
   /// Fetches the full CS2 inventory for the given Steam ID.
   ///
   /// Returns a list of [CS2Item] with quantities grouped by
   /// market_hash_name. Throws on network errors or private inventory.
+  /// If [cancelFetch] is called mid-fetch, returns items collected so far
+  /// and skips writing to the disk cache — check [wasCancelled] to detect.
   Future<List<CS2Item>> fetchInventory(String steamId) async {
+    _cancelRequested = false;
     final allAssets = <Map<String, dynamic>>[];
     final allDescriptions = <String, Map<String, dynamic>>{};
 
     String? cursor;
     bool hasMore = true;
     int pagesFetched = 0;
+    int? totalPages;
+    const pageSize = 75;
 
-    while (hasMore) {
+    while (hasMore && !_cancelRequested) {
       final uri = Uri.parse(
         '$_baseUrl/$steamId/730/2?l=english&count=75'
         '${cursor != null ? '&start_assetid=$cursor' : ''}',
@@ -96,10 +117,20 @@ class SteamApiService {
       hasMore = data['more_items'] == 1;
       pagesFetched++;
 
+      // Steam returns total_inventory_count on every response; capture
+      // it once to compute the total page count for the progress UI.
+      if (totalPages == null) {
+        final totalItems = (data['total_inventory_count'] as num?)?.toInt();
+        if (totalItems != null && totalItems > 0) {
+          totalPages = (totalItems / pageSize).ceil();
+        }
+      }
+
       // Report progress
       onProgress?.call(InventoryFetchProgress(
         itemsFetched: allAssets.length,
         pagesFetched: pagesFetched,
+        totalPages: totalPages,
         hasMore: hasMore,
       ));
 
@@ -112,8 +143,11 @@ class SteamApiService {
 
     final items = _buildItems(allAssets, allDescriptions);
 
-    // Cache to disk
-    await saveInventoryCache(steamId, items);
+    // Only persist to disk if the fetch completed naturally. A cancelled
+    // fetch would overwrite a full cached inventory with a partial one.
+    if (!_cancelRequested) {
+      await saveInventoryCache(steamId, items);
+    }
 
     return items;
   }

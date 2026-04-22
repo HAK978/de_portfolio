@@ -349,12 +349,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                           const SizedBox(width: 8),
-                          Text(
-                            progress.itemsFetched > 0
-                                ? 'Fetching... ${progress.itemsFetched} items (page ${progress.pagesFetched})'
-                                : 'Fetching inventory...',
-                            style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                          ),
+                          Builder(builder: (_) {
+                            final total = progress.totalPages;
+                            final pageLabel = total != null
+                                ? 'page ${progress.pagesFetched}/$total'
+                                : 'page ${progress.pagesFetched}';
+                            return Text(
+                              progress.itemsFetched > 0
+                                  ? 'Fetching... ${progress.itemsFetched} items ($pageLabel)'
+                                  : 'Fetching inventory...',
+                              style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                            );
+                          }),
                         ],
                       ),
                       error: (e, _) => Text(

@@ -12,6 +12,22 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 
 ### What was built/changed this session
 
+#### Bottom nav: Search replaces Settings
+- `app.dart` bottom nav destinations now: Home, Inventory, Storage, Search (Settings removed)
+- `/search` route added, pointing to new `lib/screens/search/search_screen.dart` placeholder
+- Settings is reached only via the gear icon on each screen's app bar
+
+#### Settings back navigation fix
+- All `context.go('/settings')` call sites changed to `context.push('/settings')` (home, inventory, storage, search, manual-entry button)
+- `context.push` puts settings onto the navigator stack, so the AppBar's automatic leading back button appears and Android's hardware back button returns to the previous screen (instead of closing the app)
+- No explicit back button added in settings AppBar — `automaticallyImplyLeading` handles it
+
+#### Inventory fetch page counter (a/b)
+- `InventoryFetchProgress` now carries `int? totalPages`, derived from Steam's `total_inventory_count / 75` (captured on first page response)
+- `InventoryFetchState.totalPages` added; `copyWith` and `update()` thread it through
+- Fetch progress banner on inventory screen shows `page X/Y` (or `page X` until the first response lands)
+- Settings screen's fetch status line and home screen's loading screen updated to show the same `page X/Y` format
+
 #### CSFloat auction filter
 - Added `'type': 'buy_now'` to CSFloat API queries to exclude auction listings
 - Without this, items with low opening bids would show misleadingly low CSFloat prices
@@ -40,6 +56,36 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 - Added float fetch button (water drop icon) to inventory screen app bar
 - Floats auto-fetch from GC after every Steam inventory refresh
 - Floats are cached to disk so they persist across restarts
+
+#### Steam login WebView fix
+- Fixed loop where going to Steam app for Guard code would reset the WebView to the login page
+- Root cause: `didChangeAppLifecycleState` called `_extractAndClose()` on any resume, even before auth completed
+- Fix: `_onResumedFromBackground()` checks current URL first — only extracts if already past login page
+- `_navigatedToProfile` flag prevents double-navigation to `steamcommunity.com/my/profile`
+- `_tryExtract()` has `_extracting` guard to prevent concurrent extraction attempts
+- "Done" button calls `_goToProfileAndExtract()` which navigates to steamcommunity if not already there
+
+#### GC auto-reconnect
+- Added reconnect logic in `disconnectedFromGC` handler in `storage-service/index.js`
+- If Steam session is still alive when GC drops, re-sends `gamesPlayed([730])` after 10s to prompt reconnect
+
+#### Storage unit CSFloat total
+- Added `totalCsfloatValue` field to `StorageUnit` model
+- Calculated wherever `totalValue` is calculated (cache load, fetchContents, _mergeItemUpdates with recalcValue=true)
+- Storage unit subtitle now shows two lines: item count, then `Steam $X  ·  CSFloat $Y`
+
+#### Background price refresh (WorkManager)
+- Added `workmanager: ^0.9.0` dependency
+- `lib/background/price_refresh_task.dart` — standalone background task (no Riverpod): reads inventory + storage caches from disk, fetches Steam + CSFloat prices via service classes, writes back
+- Registered as periodic task in `main.dart` with 6h frequency, aligned to clock slots (12 AM, 6 AM, 12 PM, 6 PM) via `initialDelay` calculation
+- `callbackDispatcher` is top-level with `@pragma('vm:entry-point')` annotation
+- `saveLastPriceFetchTimestamp()` (top-level fn in price_provider.dart) called after inventory fetch, storage fetch, and background refresh
+- Home screen shows "Prices updated today at 6:00 PM" (exact timestamp, not relative) below price fetch cards
+
+#### Daily auto-refresh on app open
+- `PriceFetchNotifier.autoRefreshIfStale()` checks `last_price_fetch.txt` timestamp — triggers inventory price fetch if >24h old
+- Called from `HomeScreen.initState()` via `addPostFrameCallback`
+- Storage units auto-refresh prices when expanded if their cache is >24h old (`_isCacheStale()` in storage_provider)
 
 #### Price chart minimap with viewport navigation and manual zoom/pan
 - Removed fl_chart's `FlTransformationConfig` — replaced with custom `GestureDetector` zoom/pan using `_viewStart`/`_viewEnd` (0–1 fractions of full daily timeline)
@@ -72,9 +118,10 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 - `lib/screens/storage/storage_screen.dart` — storage units with lazy-load, dual progress bars, search/sort/filter, total item count, tap-to-detail, API key + URL config
 - `lib/screens/settings/settings_screen.dart` — Steam login status with session validation, Steam ID, CSFloat key, cookie input, cache clear, sign out (Firebase + local)
 - `lib/widgets/item_card.dart` — optimized card with dual prices + % difference
-- `lib/widgets/price_chart.dart` — fl_chart with native zoom/pan, range chips, hourly/daily auto-switch
+- `lib/widgets/price_chart.dart` — fl_chart with manual GestureDetector zoom/pan, range chips, hourly/daily auto-switch, minimap
 - `lib/widgets/portfolio_summary_v2.dart` — expandable portfolio card with per-source breakdown (PortfolioSource model)
-- `lib/main.dart` — app entry with wakelock + Firebase init (uses DefaultFirebaseOptions)
+- `lib/background/price_refresh_task.dart` — WorkManager background task: reads caches, fetches Steam+CSFloat prices, writes back (no Riverpod)
+- `lib/main.dart` — app entry with wakelock + Firebase init + WorkManager periodic task registration
 - `lib/app.dart` — GoRouter config with /inventory/:itemId and /storage/item routes
 - `android/app/src/main/kotlin/.../MainActivity.kt` — platform channel for reading HttpOnly cookies
 - `functions/src/index.ts` — Cloud Function: createCustomToken (Firebase Auth)
@@ -93,9 +140,10 @@ CS2 (Counter-Strike 2) Inventory Manager — a Flutter mobile app that fetches a
 ### Dependencies
 - flutter_riverpod 3.3.1, go_router 17.1.0, http, path_provider, wakelock_plus
 - cached_network_image (only in item_detail_screen.dart), google_fonts, intl
-- fl_chart ^1.2.0 (price history charts with FlTransformationConfig zoom/pan)
+- fl_chart ^1.2.0 (price history charts with manual zoom/pan)
 - firebase_core, cloud_firestore, firebase_auth, cloud_functions (configured and connected)
 - webview_flutter, webview_flutter_android (Steam login)
+- workmanager ^0.9.0 (background price refresh every 6h)
 
 ### Rules
 - **DO NOT add Co-Authored-By or any co-author/contributor attribution in git commits. All commits should only have the user as the author.**

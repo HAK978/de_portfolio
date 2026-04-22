@@ -5,6 +5,7 @@ import 'models/cs2_item.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/inventory/inventory_screen.dart';
 import 'screens/inventory/item_detail_screen.dart';
+import 'screens/search/search_screen.dart';
 import 'screens/storage/storage_screen.dart';
 import 'screens/settings/settings_screen.dart';
 
@@ -28,17 +29,19 @@ class AppShell extends StatelessWidget {
           NavigationDestination(icon: Icon(Icons.dashboard), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.inventory_2), label: 'Inventory'),
           NavigationDestination(icon: Icon(Icons.storage), label: 'Storage'),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
+          NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
         ],
       ),
     );
   }
 
+  /// Settings is reached via the gear icon in each screen's app bar,
+  /// so it maps back to whichever tab the user was last on when active.
   int _calculateSelectedIndex(BuildContext context) {
     final location = GoRouterState.of(context).uri.toString();
     if (location.startsWith('/inventory')) return 1;
     if (location.startsWith('/storage')) return 2;
-    if (location.startsWith('/settings')) return 3;
+    if (location.startsWith('/search')) return 3;
     return 0;
   }
 
@@ -51,7 +54,7 @@ class AppShell extends StatelessWidget {
       case 2:
         context.go('/storage');
       case 3:
-        context.go('/settings');
+        context.go('/search');
     }
   }
 }
@@ -98,6 +101,10 @@ final goRouter = GoRouter(
               },
             ),
           ],
+        ),
+        GoRoute(
+          path: '/search',
+          builder: (context, state) => const SearchScreen(),
         ),
         GoRoute(
           path: '/settings',

@@ -74,22 +74,26 @@ class InventoryFetchState {
   final bool isFetching;
   final int itemsFetched;
   final int pagesFetched;
+  final int? totalPages;
 
   const InventoryFetchState({
     this.isFetching = false,
     this.itemsFetched = 0,
     this.pagesFetched = 0,
+    this.totalPages,
   });
 
   InventoryFetchState copyWith({
     bool? isFetching,
     int? itemsFetched,
     int? pagesFetched,
+    int? totalPages,
   }) {
     return InventoryFetchState(
       isFetching: isFetching ?? this.isFetching,
       itemsFetched: itemsFetched ?? this.itemsFetched,
       pagesFetched: pagesFetched ?? this.pagesFetched,
+      totalPages: totalPages ?? this.totalPages,
     );
   }
 }
@@ -108,6 +112,7 @@ class InventoryFetchProgressNotifier extends Notifier<InventoryFetchState> {
       isFetching: progress.hasMore,
       itemsFetched: progress.itemsFetched,
       pagesFetched: progress.pagesFetched,
+      totalPages: progress.totalPages,
     );
   }
 
@@ -180,6 +185,11 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
 
     try {
       final items = await service.fetchInventory(steamId);
+      if (service.wasCancelled) {
+        debugPrint('Inventory fetch cancelled — restoring previous cache');
+        final oldCache = await service.loadInventoryCache(steamId);
+        return oldCache ?? [];
+      }
       debugPrint('Fetched ${items.length} items from Steam');
       _syncToFirestore(steamId, items);
       // Auto-fetch floats from GC in the background after inventory loads
@@ -192,6 +202,11 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       service.onProgress = null;
       progressNotifier.reset();
     }
+  }
+
+  /// Signal the Steam fetch to stop after its current page.
+  void cancelFetch() {
+    ref.read(steamApiServiceProvider).cancelFetch();
   }
 
   /// Updates item prices from a map of marketHashName → price.
@@ -325,14 +340,21 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
   }
 
   /// Force re-fetch the inventory from Steam (ignores cache).
+  /// Keeps current items visible during the fetch so the progress banner
+  /// can render over the existing list; only swaps state on success/error.
   Future<void> refresh() async {
     final steamId = ref.read(steamIdProvider);
     debugPrint('refresh() called, steamId: "$steamId"');
-    state = const AsyncValue.loading();
-    state = await AsyncValue.guard(() async {
-      if (steamId.isEmpty) return [];
-      return _fetchFromSteam(steamId);
-    });
+    if (steamId.isEmpty) {
+      state = const AsyncValue.data([]);
+      return;
+    }
+    try {
+      final items = await _fetchFromSteam(steamId);
+      state = AsyncValue.data(items);
+    } catch (e, stack) {
+      state = AsyncValue.error(e, stack);
+    }
   }
 }
 

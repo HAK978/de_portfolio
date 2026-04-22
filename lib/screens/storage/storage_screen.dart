@@ -241,6 +241,11 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: () => context.push('/settings'),
+          ),
+          IconButton(
             icon: Badge(
               isLabelVisible: _hasActiveFilters(),
               smallSize: 8,

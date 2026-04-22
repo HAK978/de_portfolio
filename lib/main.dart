@@ -9,10 +9,10 @@ import 'background/price_refresh_task.dart';
 import 'firebase_options.dart';
 import 'theme/app_theme.dart';
 
-/// Returns the duration until the next 6-hour slot: 12 AM, 6 AM, 12 PM, 6 PM.
+/// Returns the duration until the next 3-hour slot: 12 AM, 3, 6, 9, 12 PM, 3, 6, 9.
 Duration _delayUntilNextSlot() {
   final now = DateTime.now();
-  for (final hour in [0, 6, 12, 18]) {
+  for (final hour in [0, 3, 6, 9, 12, 15, 18, 21]) {
     final slot = DateTime(now.year, now.month, now.day, hour);
     if (slot.isAfter(now)) return slot.difference(now);
   }
@@ -33,15 +33,15 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   WakelockPlus.enable();
 
-  // Register the 6-hour background price refresh
+  // Register the 3-hour background price refresh
   await Workmanager().initialize(callbackDispatcher);
   await Workmanager().registerPeriodicTask(
     'cs2-price-refresh',
     'priceRefreshTask',
-    frequency: const Duration(hours: 6),
+    frequency: const Duration(hours: 3),
     initialDelay: _delayUntilNextSlot(),
     constraints: Constraints(networkType: NetworkType.connected),
-    existingWorkPolicy: ExistingPeriodicWorkPolicy.keep,
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
   );
 
   // Initialize Firebase — wrapped in try/catch so the app works

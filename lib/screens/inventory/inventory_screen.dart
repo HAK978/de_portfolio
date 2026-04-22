@@ -291,10 +291,13 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: () => context.push('/settings'),
+          ),
           // Fetch inventory from Steam
           _FetchInventoryButton(),
-          // Fetch float values from GC
-          _FetchFloatsButton(),
           // Filter button — opens bottom sheet
           IconButton(
             icon: Badge(
@@ -332,6 +335,8 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
       ),
       body: Column(
         children: [
+          // Live progress banner for Steam inventory fetch (refresh path)
+          const _FetchProgressBanner(),
           // Search bar
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -392,69 +397,68 @@ class _InventoryScreenState extends ConsumerState<InventoryScreen> {
   }
 }
 
-/// Button that fetches inventory from Steam, showing progress while active.
+/// Button that fetches inventory from Steam. Disabled while a fetch is
+/// active — progress and cancel live in the [_FetchProgressBanner] below.
 class _FetchInventoryButton extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final fetchProgress = ref.watch(inventoryFetchProgressProvider);
-
-    if (fetchProgress.isFetching) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: Theme.of(context).colorScheme.primary,
-          ),
-        ),
-      );
-    }
+    final isFetching = ref.watch(inventoryFetchProgressProvider).isFetching;
 
     return IconButton(
       icon: const Icon(Icons.refresh),
       tooltip: 'Fetch inventory from Steam',
-      onPressed: () {
-        ref.read(inventoryProvider.notifier).refresh();
-      },
+      onPressed: isFetching
+          ? null
+          : () => ref.read(inventoryProvider.notifier).refresh(),
     );
   }
 }
 
-/// Button that fetches float values from the GC service.
-class _FetchFloatsButton extends ConsumerStatefulWidget {
-  @override
-  ConsumerState<_FetchFloatsButton> createState() => _FetchFloatsButtonState();
-}
-
-class _FetchFloatsButtonState extends ConsumerState<_FetchFloatsButton> {
-  bool _loading = false;
+/// Linear progress banner shown at the top of the inventory body while
+/// a Steam fetch is running. Reports items/page count and offers Cancel.
+class _FetchProgressBanner extends ConsumerWidget {
+  const _FetchProgressBanner();
 
   @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 12),
-        child: SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      );
-    }
+  Widget build(BuildContext context, WidgetRef ref) {
+    final progress = ref.watch(inventoryFetchProgressProvider);
+    if (!progress.isFetching) return const SizedBox.shrink();
 
-    return IconButton(
-      icon: const Icon(Icons.opacity, size: 22),
-      tooltip: 'Fetch float values',
-      onPressed: () async {
-        setState(() => _loading = true);
-        try {
-          await ref.read(inventoryProvider.notifier).fetchInventoryFloats();
-        } finally {
-          if (mounted) setState(() => _loading = false);
-        }
-      },
+    final total = progress.totalPages;
+    final pageLabel = total != null
+        ? 'page ${progress.pagesFetched}/$total'
+        : 'page ${progress.pagesFetched}';
+    final label = progress.itemsFetched > 0
+        ? 'Fetching... ${progress.itemsFetched} items ($pageLabel)'
+        : 'Fetching inventory from Steam...';
+
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const LinearProgressIndicator(minHeight: 2),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: const TextStyle(fontSize: 13),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      ref.read(inventoryProvider.notifier).cancelFetch(),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
