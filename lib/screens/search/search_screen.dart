@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -330,7 +328,6 @@ class SearchScreen extends ConsumerStatefulWidget {
 
 class _SearchScreenState extends ConsumerState<SearchScreen> {
   late final TextEditingController _controller;
-  Timer? _fetchTimer;
 
   @override
   void initState() {
@@ -342,27 +339,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   @override
   void dispose() {
-    _fetchTimer?.cancel();
     _controller.dispose();
     super.dispose();
-  }
-
-  /// Fetch prices for the current filtered list. Bails if empty or
-  /// over the auto-fetch cap. Called on Enter submit and (debounced)
-  /// on filter changes.
-  void _triggerFetch() {
-    _fetchTimer?.cancel();
-    if (!mounted) return;
-    final results = ref.read(filteredSearchResultsProvider);
-    if (results.isEmpty) return;
-    if (results.length > searchPriceAutoFetchCap) return;
-    ref.read(searchPricesProvider.notifier).fetchForItems(results);
-  }
-
-  void _scheduleFetch(
-      [Duration delay = const Duration(milliseconds: 500)]) {
-    _fetchTimer?.cancel();
-    _fetchTimer = Timer(delay, _triggerFetch);
   }
 
   bool _hasActiveFilters() {
@@ -398,16 +376,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     ref.watch(searchQualityFilterProvider);
     final currentSort = ref.watch(searchSortProvider);
 
-    // Trigger a price fetch only when the user commits a filter
-    // change — not on every keystroke. Typing "bolt" matches lots of
-    // Boltz stickers, and we don't want to burn API calls on those.
-    // Enter submit on the TextField below also calls _triggerFetch
-    // immediately.
-    ref.listen(searchRarityFilterProvider, (_, _) => _scheduleFetch());
-    ref.listen(searchWeaponTypeFilterProvider, (_, _) => _scheduleFetch());
-    ref.listen(searchWearFilterProvider, (_, _) => _scheduleFetch());
-    ref.listen(searchCollectionFilterProvider, (_, _) => _scheduleFetch());
-    ref.listen(searchQualityFilterProvider, (_, _) => _scheduleFetch());
+    // Prices are fetched only when the user taps the "Load prices"
+    // button below — never automatically — so they can compose their
+    // query + filters without burning API budget on partial matches.
 
     return Scaffold(
       appBar: AppBar(
@@ -467,9 +438,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               textInputAction: TextInputAction.search,
               onChanged: (v) =>
                   ref.read(searchCatalogQueryProvider.notifier).set(v),
-              onSubmitted: (_) => _triggerFetch(),
               decoration: InputDecoration(
-                hintText: 'Search any CS2 item, then press Search',
+                hintText: 'Search any CS2 item...',
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: _controller.text.isNotEmpty
                     ? IconButton(
@@ -490,6 +460,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ),
           ),
           const _ActiveFilterChipsRow(),
+          const _LoadPricesButton(),
           Expanded(
             child: catalogAsync.when(
               loading: () => const Center(
@@ -553,6 +524,62 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Explicit "Load prices for N items" button. Hidden when there are
+/// no results, when the list is over the cap, or when every visible
+/// item already has both Steam and CSFloat resolved. Lets the user
+/// compose query + filters fully before spending API budget.
+class _LoadPricesButton extends ConsumerWidget {
+  const _LoadPricesButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final results = ref.watch(filteredSearchResultsProvider);
+    final prices = ref.watch(searchPricesProvider);
+
+    if (results.isEmpty) return const SizedBox.shrink();
+    if (results.length > searchPriceAutoFetchCap) return const SizedBox.shrink();
+
+    var unpriced = 0;
+    var anyLoading = false;
+    for (final item in results) {
+      final hash = item.marketHashName;
+      if (!prices.steam.containsKey(hash) || !prices.csfloat.containsKey(hash)) {
+        unpriced++;
+      }
+      if (prices.loading.contains(hash)) anyLoading = true;
+    }
+
+    // Nothing to do — every row is already priced.
+    if (unpriced == 0 && !anyLoading) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          icon: anyLoading
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.attach_money, size: 18),
+          label: Text(
+            anyLoading
+                ? 'Loading prices...'
+                : 'Load prices for $unpriced item${unpriced == 1 ? '' : 's'}',
+          ),
+          onPressed: anyLoading
+              ? null
+              : () => ref
+                  .read(searchPricesProvider.notifier)
+                  .fetchForItems(results),
+        ),
       ),
     );
   }
