@@ -389,6 +389,31 @@ class _PriceFetchCard extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
+            ] else if (disabled) ...[
+              // Inventory finished but storage units are still being
+              // priced in the background. Keep the card "busy" so the
+              // home total ticking up isn't a mystery.
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      '$label: refreshing storage units...',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              const ClipRRect(
+                borderRadius: BorderRadius.all(Radius.circular(4)),
+                child: LinearProgressIndicator(minHeight: 6),
+              ),
             ] else if (priceFetch.isDone) ...[
               Row(
                 children: [
