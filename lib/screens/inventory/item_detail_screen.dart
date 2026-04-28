@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/cs2_item.dart';
+import '../../providers/cs2_database_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
+import '../../services/cs2_database_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/price_change_badge.dart';
 import '../../widgets/price_chart.dart';
@@ -267,6 +269,11 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
           ],
           const SizedBox(height: 12),
 
+          // "Contains" drops section — only for containers that have
+          // drop data loaded from ByMykel.
+          if (item.weaponType == 'Container')
+            _CaseContentsSection(marketHashName: item.marketHashName),
+
           // Price history chart
           _PriceHistorySection(marketHashName: item.marketHashName),
         ],
@@ -497,4 +504,157 @@ class _PriceHistorySection extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// Shows the list of possible drops for a container (case, capsule,
+/// sticker package, etc.). Data comes from ByMykel's `contains` and
+/// `contains_rare` arrays, cached alongside the catalog. Returns an
+/// empty sliver if the item isn't in the catalog or has no drop data.
+/// Drops are grouped by rarity with the same rarity-tier colors used
+/// throughout the app; rare drops (knives/gloves/gold stickers) get
+/// their own highlighted section at the top.
+class _CaseContentsSection extends ConsumerWidget {
+  final String marketHashName;
+
+  const _CaseContentsSection({required this.marketHashName});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final contents = ref.watch(caseContentsProvider)[marketHashName];
+    if (contents == null || contents.isEmpty) return const SizedBox.shrink();
+
+    // Group the common pool by rarity so the list reads top-to-bottom
+    // as Covert → Classified → Restricted → … (tier colors guide the eye).
+    const rarityOrder = [
+      'Covert',
+      'Classified',
+      'Restricted',
+      'Mil-Spec Grade',
+      'Industrial Grade',
+      'Consumer Grade',
+      'Extraordinary',
+      'Exotic',
+      'Remarkable',
+      'High Grade',
+      'Base Grade',
+    ];
+    final grouped = <String, List<CaseDrop>>{};
+    for (final d in contents.contains) {
+      grouped.putIfAbsent(d.rarity, () => []).add(d);
+    }
+    final orderedRarities = [
+      ...rarityOrder.where(grouped.containsKey),
+      ...grouped.keys.where((r) => !rarityOrder.contains(r)),
+    ];
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Contains',
+                style: TextStyle(color: Colors.grey[400], fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              if (contents.containsRare.isNotEmpty) ...[
+                Text(
+                  'Rare Special Item',
+                  style: TextStyle(
+                    color: Colors.amber[300],
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                ...contents.containsRare.map(
+                  (d) => _CaseDropTile(drop: d),
+                ),
+                const Divider(height: 24),
+              ],
+              for (final rarity in orderedRarities) ...[
+                Text(
+                  rarity,
+                  style: TextStyle(
+                    color: _parseHexColor(grouped[rarity]!.first.rarityColor),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                ...grouped[rarity]!.map((d) => _CaseDropTile(drop: d)),
+                const SizedBox(height: 10),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CaseDropTile extends StatelessWidget {
+  final CaseDrop drop;
+
+  const _CaseDropTile({required this.drop});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _parseHexColor(drop.rarityColor);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 32,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          SizedBox(
+            width: 48,
+            height: 32,
+            child: drop.imageUrl.isEmpty
+                ? const Icon(Icons.image_not_supported,
+                    color: Colors.white24, size: 16)
+                : Image.network(
+                    drop.imageUrl,
+                    fit: BoxFit.contain,
+                    cacheHeight: 64,
+                    errorBuilder: (_, _, _) => const Icon(
+                      Icons.broken_image,
+                      color: Colors.white24,
+                      size: 16,
+                    ),
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null ? child : const SizedBox.shrink(),
+                  ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              drop.name,
+              style: const TextStyle(fontSize: 13),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Color _parseHexColor(String hex) {
+  final clean = hex.replaceAll('#', '');
+  if (clean.length != 6) return const Color(0xFFB0C3D9);
+  final value = int.tryParse(clean, radix: 16);
+  if (value == null) return const Color(0xFFB0C3D9);
+  return Color(0xFF000000 | value);
 }

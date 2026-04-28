@@ -94,6 +94,48 @@ class SearchQualityFilterNotifier extends Notifier<Set<String>> {
   void clear() => state = {};
 }
 
+/// Container subtype filter: any subset of [_containerTypes]. When
+/// set (or capsule filter set), the result is narrowed to containers
+/// matching one of the selected subtypes or specific capsules.
+final searchContainerTypeFilterProvider =
+    NotifierProvider<SearchContainerTypeFilterNotifier, Set<String>>(
+  SearchContainerTypeFilterNotifier.new,
+);
+
+class SearchContainerTypeFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+/// Set of specific capsule market_hash_names the user has picked.
+final searchCapsuleFilterProvider =
+    NotifierProvider<SearchCapsuleFilterNotifier, Set<String>>(
+  SearchCapsuleFilterNotifier.new,
+);
+
+class SearchCapsuleFilterNotifier extends Notifier<Set<String>> {
+  @override
+  Set<String> build() => {};
+  void toggle(String v) =>
+      state = state.contains(v) ? ({...state}..remove(v)) : {...state, v};
+  void clear() => state = {};
+}
+
+/// Every capsule present in the loaded catalog, sorted by name.
+final availableCapsulesProvider = Provider<List<String>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final set = <String>{};
+  for (final item in items) {
+    if (item.weaponType != 'Container') continue;
+    if (!_isCapsule(item.marketHashName)) continue;
+    set.add(item.marketHashName);
+  }
+  return set.toList()..sort();
+});
+
 /// Sort options applicable to the Search catalog. 24h change and
 /// quantity don't apply (search items have no owned quantity, and
 /// catalog entries have no historical price state).
@@ -195,6 +237,8 @@ final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
   final wear = ref.watch(searchWearFilterProvider);
   final collection = ref.watch(searchCollectionFilterProvider);
   final quality = ref.watch(searchQualityFilterProvider);
+  final containerType = ref.watch(searchContainerTypeFilterProvider);
+  final capsules = ref.watch(searchCapsuleFilterProvider);
   final sort = ref.watch(searchSortProvider);
   final prices = ref.watch(searchPricesProvider);
 
@@ -206,7 +250,9 @@ final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
       weapon.isEmpty &&
       wear.isEmpty &&
       collection.isEmpty &&
-      quality.isEmpty;
+      quality.isEmpty &&
+      containerType.isEmpty &&
+      capsules.isEmpty;
   if (noInput) return const [];
 
   final out = <CS2Item>[];
@@ -232,6 +278,16 @@ final filteredSearchResultsProvider = Provider<List<CS2Item>>((ref) {
               ? 'Souvenir'
               : 'Normal';
       if (!quality.contains(q)) continue;
+    }
+    if (containerType.isNotEmpty || capsules.isNotEmpty) {
+      if (item.weaponType != 'Container') continue;
+      final name = item.marketHashName;
+      final matchesType =
+          (containerType.contains('Weapon Cases') && _isWeaponCase(name)) ||
+              (containerType.contains('Souvenir Packages') &&
+                  _isSouvenirPackage(name));
+      final matchesCapsule = capsules.contains(name);
+      if (!matchesType && !matchesCapsule) continue;
     }
     out.add(item);
   }
@@ -319,6 +375,72 @@ void _applySort(
 /// from trying to build 30k+ widgets when the query is very short.
 const _maxResults = 200;
 
+/// Ordered sub-sections for the Rarity filter. Rarities are grouped by
+/// the item category they belong to so the filter sheet isn't a flat
+/// alphabetical list with random gray dots.
+///
+/// "Base Grade" appears under both Stickers/... and Containers, and
+/// "Extraordinary" under both Stickers/... and Collectibles — these
+/// are genuine overlaps in Valve's naming, and selecting the chip from
+/// either section toggles the same underlying filter.
+const _rarityGroups = <(String, List<String>)>[
+  ('Skins', [
+    'Consumer Grade',
+    'Industrial Grade',
+    'Mil-Spec Grade',
+    'Restricted',
+    'Classified',
+    'Covert',
+    'Contraband',
+    '★',
+  ]),
+  ('Agents', [
+    'Distinguished',
+    'Exceptional',
+    'Superior',
+    'Master Agent',
+  ]),
+  ('Stickers / Patches / Keychains / Music Kits / Graffiti', [
+    'Base Grade',
+    'High Grade',
+    'Remarkable',
+    'Exotic',
+    'Extraordinary',
+  ]),
+  ('Collectibles', ['Extraordinary']),
+];
+
+/// Subtype picker values for Containers. Individual capsules go
+/// through [searchCapsuleFilterProvider] since there are hundreds.
+const _containerTypes = ['Weapon Cases', 'Souvenir Packages'];
+
+bool _isWeaponCase(String hashName) => hashName.endsWith(' Case');
+bool _isSouvenirPackage(String hashName) =>
+    hashName.endsWith(' Souvenir Package');
+bool _isCapsule(String hashName) =>
+    hashName.toLowerCase().contains('capsule');
+
+/// Map of rarity name → color pulled from each item's ByMykel
+/// rarity.color so the filter dots match real in-game colors rather
+/// than the inventory-only `CS2Colors.fromRarity` fallback.
+final rarityColorsProvider = Provider<Map<String, Color>>((ref) {
+  final items = _currentCatalogItems(ref);
+  final map = <String, Color>{};
+  for (final item in items) {
+    if (map.containsKey(item.rarity)) continue;
+    map[item.rarity] = _parseHexColor(item.rarityColor);
+  }
+  return map;
+});
+
+Color _parseHexColor(String hex) {
+  final clean = hex.replaceAll('#', '');
+  if (clean.length != 6) return const Color(0xFFB0C3D9);
+  final value = int.tryParse(clean, radix: 16);
+  if (value == null) return const Color(0xFFB0C3D9);
+  return Color(0xFF000000 | value);
+}
+
 class SearchScreen extends ConsumerStatefulWidget {
   const SearchScreen({super.key});
 
@@ -348,7 +470,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         ref.read(searchWeaponTypeFilterProvider).isNotEmpty ||
         ref.read(searchWearFilterProvider).isNotEmpty ||
         ref.read(searchCollectionFilterProvider).isNotEmpty ||
-        ref.read(searchQualityFilterProvider).isNotEmpty;
+        ref.read(searchQualityFilterProvider).isNotEmpty ||
+        ref.read(searchContainerTypeFilterProvider).isNotEmpty ||
+        ref.read(searchCapsuleFilterProvider).isNotEmpty;
   }
 
   void _showFilterSheet() {
@@ -374,6 +498,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     ref.watch(searchWearFilterProvider);
     ref.watch(searchCollectionFilterProvider);
     ref.watch(searchQualityFilterProvider);
+    ref.watch(searchContainerTypeFilterProvider);
+    ref.watch(searchCapsuleFilterProvider);
     final currentSort = ref.watch(searchSortProvider);
 
     // Prices are fetched only when the user taps the "Load prices"
@@ -598,6 +724,8 @@ class _ActiveFilterChipsRow extends ConsumerWidget {
     final wear = ref.watch(searchWearFilterProvider);
     final collection = ref.watch(searchCollectionFilterProvider);
     final quality = ref.watch(searchQualityFilterProvider);
+    final containerType = ref.watch(searchContainerTypeFilterProvider);
+    final capsules = ref.watch(searchCapsuleFilterProvider);
 
     final chips = <Widget>[];
     void addChips(Set<String> values, void Function(String) onDelete) {
@@ -621,6 +749,13 @@ class _ActiveFilterChipsRow extends ConsumerWidget {
         wear, (v) => ref.read(searchWearFilterProvider.notifier).toggle(v));
     addChips(collection,
         (v) => ref.read(searchCollectionFilterProvider.notifier).toggle(v));
+    addChips(
+        containerType,
+        (v) => ref
+            .read(searchContainerTypeFilterProvider.notifier)
+            .toggle(v));
+    addChips(capsules,
+        (v) => ref.read(searchCapsuleFilterProvider.notifier).toggle(v));
 
     if (chips.isEmpty) return const SizedBox.shrink();
 
@@ -1012,12 +1147,16 @@ class _SearchFilterSheet extends ConsumerWidget {
     final weaponTypes = ref.watch(availableSearchWeaponTypesProvider);
     final wears = ref.watch(availableSearchWearsProvider);
     final collections = ref.watch(availableSearchCollectionsProvider);
+    final capsules = ref.watch(availableCapsulesProvider);
+    final rarityColors = ref.watch(rarityColorsProvider);
 
     final currentRarity = ref.watch(searchRarityFilterProvider);
     final currentWeapon = ref.watch(searchWeaponTypeFilterProvider);
     final currentWear = ref.watch(searchWearFilterProvider);
     final currentCollection = ref.watch(searchCollectionFilterProvider);
     final currentQuality = ref.watch(searchQualityFilterProvider);
+    final currentContainerType = ref.watch(searchContainerTypeFilterProvider);
+    final currentCapsules = ref.watch(searchCapsuleFilterProvider);
 
     return DraggableScrollableSheet(
       expand: false,
@@ -1057,6 +1196,10 @@ class _SearchFilterSheet extends ConsumerWidget {
                       ref.read(searchWearFilterProvider.notifier).clear();
                       ref.read(searchCollectionFilterProvider.notifier).clear();
                       ref.read(searchQualityFilterProvider.notifier).clear();
+                      ref
+                          .read(searchContainerTypeFilterProvider.notifier)
+                          .clear();
+                      ref.read(searchCapsuleFilterProvider.notifier).clear();
                     },
                     child: const Text('Clear All'),
                   ),
@@ -1074,12 +1217,12 @@ class _SearchFilterSheet extends ConsumerWidget {
               const SizedBox(height: 12),
 
               _sectionLabel('Rarity'),
-              _chipWrap(
-                options: rarities,
+              ..._buildRarityGroups(
+                available: rarities.toSet(),
                 selected: currentRarity,
+                colors: rarityColors,
                 onToggle: (v) =>
                     ref.read(searchRarityFilterProvider.notifier).toggle(v),
-                showRarityDot: true,
               ),
               const SizedBox(height: 12),
 
@@ -1121,6 +1264,39 @@ class _SearchFilterSheet extends ConsumerWidget {
                         : '${currentCollection.length} selected',
                     style: TextStyle(
                       color: currentCollection.isEmpty
+                          ? Colors.grey[500]
+                          : Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              _sectionLabel('Container Type'),
+              _chipWrap(
+                options: _containerTypes,
+                selected: currentContainerType,
+                onToggle: (v) => ref
+                    .read(searchContainerTypeFilterProvider.notifier)
+                    .toggle(v),
+              ),
+              const SizedBox(height: 8),
+              InkWell(
+                onTap: () => _showCapsulePicker(context, capsules),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    currentCapsules.isEmpty
+                        ? 'Pick capsules (${capsules.length} available)'
+                        : '${currentCapsules.length} capsule${currentCapsules.length == 1 ? '' : 's'} selected',
+                    style: TextStyle(
+                      color: currentCapsules.isEmpty
                           ? Colors.grey[500]
                           : Colors.white,
                     ),
@@ -1184,10 +1360,96 @@ class _SearchFilterSheet extends ConsumerWidget {
     );
   }
 
+  /// Build the Rarity filter body as ordered sub-sections.
+  /// Skips any group whose rarities aren't present in the catalog.
+  /// Anything left over lands in an "Other" bucket.
+  List<Widget> _buildRarityGroups({
+    required Set<String> available,
+    required Set<String> selected,
+    required Map<String, Color> colors,
+    required void Function(String) onToggle,
+  }) {
+    final widgets = <Widget>[];
+    final rendered = <String>{};
+
+    for (final (title, options) in _rarityGroups) {
+      final present = options.where(available.contains).toList();
+      if (present.isEmpty) continue;
+      widgets.add(_rarityGroupLabel(title));
+      widgets.add(_rarityChipWrap(present, selected, onToggle, colors));
+      widgets.add(const SizedBox(height: 8));
+      rendered.addAll(present);
+    }
+
+    final leftovers = available.difference(rendered).toList()..sort();
+    if (leftovers.isNotEmpty) {
+      widgets.add(_rarityGroupLabel('Other'));
+      widgets.add(_rarityChipWrap(leftovers, selected, onToggle, colors));
+    }
+
+    return widgets;
+  }
+
+  Widget _rarityGroupLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 6),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: Colors.grey[500],
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+
+  Widget _rarityChipWrap(
+    List<String> options,
+    Set<String> selected,
+    void Function(String) onToggle,
+    Map<String, Color> colors,
+  ) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      children: options.map((opt) {
+        final color = colors[opt] ?? const Color(0xFFB0C3D9);
+        return FilterChip(
+          label: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              Text(opt, style: const TextStyle(fontSize: 12)),
+            ],
+          ),
+          selected: selected.contains(opt),
+          onSelected: (_) => onToggle(opt),
+          visualDensity: VisualDensity.compact,
+        );
+      }).toList(),
+    );
+  }
+
   void _showCollectionPicker(BuildContext context, List<String> options) {
     showDialog(
       context: context,
       builder: (_) => _SearchCollectionDialog(options: options),
+    );
+  }
+
+  void _showCapsulePicker(BuildContext context, List<String> options) {
+    showDialog(
+      context: context,
+      builder: (_) => _SearchCapsuleDialog(options: options),
     );
   }
 }
@@ -1258,6 +1520,88 @@ class _SearchCollectionDialogState
                   TextButton(
                     onPressed: () => ref
                         .read(searchCollectionFilterProvider.notifier)
+                        .clear(),
+                    child: const Text('Clear'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Done'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchCapsuleDialog extends ConsumerStatefulWidget {
+  final List<String> options;
+  const _SearchCapsuleDialog({required this.options});
+
+  @override
+  ConsumerState<_SearchCapsuleDialog> createState() =>
+      _SearchCapsuleDialogState();
+}
+
+class _SearchCapsuleDialogState extends ConsumerState<_SearchCapsuleDialog> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = ref.watch(searchCapsuleFilterProvider);
+    final q = _query.toLowerCase();
+    final filtered = q.isEmpty
+        ? widget.options
+        : widget.options.where((c) => c.toLowerCase().contains(q)).toList();
+
+    return Dialog(
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      child: SizedBox(
+        width: double.maxFinite,
+        height: MediaQuery.of(context).size.height * 0.6,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search capsules...',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  isDense: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                onChanged: (v) => setState(() => _query = v),
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: filtered.length,
+                itemBuilder: (context, i) {
+                  final name = filtered[i];
+                  return CheckboxListTile(
+                    title: Text(name, style: const TextStyle(fontSize: 14)),
+                    value: selected.contains(name),
+                    dense: true,
+                    onChanged: (_) => ref
+                        .read(searchCapsuleFilterProvider.notifier)
+                        .toggle(name),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => ref
+                        .read(searchCapsuleFilterProvider.notifier)
                         .clear(),
                     child: const Text('Clear'),
                   ),

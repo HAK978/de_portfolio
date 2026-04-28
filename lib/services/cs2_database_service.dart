@@ -7,12 +7,103 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
 
+/// A single possible drop inside a container (case / capsule / package).
+/// Slimmed-down shape — just what we need to render the preview row.
+/// Market hash name is nullable because some ByMykel entries (rare
+/// items like knife vanillas) don't have one.
+class CaseDrop {
+  final String name;
+  final String? marketHashName;
+  final String imageUrl;
+  final String rarity;
+  final String rarityColor;
+
+  const CaseDrop({
+    required this.name,
+    required this.marketHashName,
+    required this.imageUrl,
+    required this.rarity,
+    required this.rarityColor,
+  });
+
+  factory CaseDrop.fromByMykel(Map<String, dynamic> j) {
+    final rarity = j['rarity'] as Map<String, dynamic>?;
+    return CaseDrop(
+      name: j['name'] as String? ?? '',
+      marketHashName: j['market_hash_name'] as String?,
+      imageUrl: j['image'] as String? ?? '',
+      rarity: rarity?['name'] as String? ?? 'Consumer Grade',
+      rarityColor: rarity?['color'] as String? ?? '#b0c3d9',
+    );
+  }
+
+  factory CaseDrop.fromJson(Map<String, dynamic> j) => CaseDrop(
+        name: j['name'] as String,
+        marketHashName: j['marketHashName'] as String?,
+        imageUrl: j['imageUrl'] as String,
+        rarity: j['rarity'] as String,
+        rarityColor: j['rarityColor'] as String,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'marketHashName': marketHashName,
+        'imageUrl': imageUrl,
+        'rarity': rarity,
+        'rarityColor': rarityColor,
+      };
+}
+
+/// Drops for one container (case, capsule, package, etc.). `contains`
+/// is the common pool; `containsRare` holds the special tier (knives,
+/// gloves, or "gold" stickers) that unbox at ~0.26% rate.
+class CaseContents {
+  final List<CaseDrop> contains;
+  final List<CaseDrop> containsRare;
+
+  const CaseContents({
+    this.contains = const [],
+    this.containsRare = const [],
+  });
+
+  bool get isEmpty => contains.isEmpty && containsRare.isEmpty;
+
+  Map<String, dynamic> toJson() => {
+        'contains': contains.map((d) => d.toJson()).toList(),
+        'containsRare': containsRare.map((d) => d.toJson()).toList(),
+      };
+
+  factory CaseContents.fromJson(Map<String, dynamic> j) {
+    List<CaseDrop> list(String key) => (j[key] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .map(CaseDrop.fromJson)
+        .toList();
+    return CaseContents(
+      contains: list('contains'),
+      containsRare: list('containsRare'),
+    );
+  }
+}
+
+/// Bundle returned by [Cs2DatabaseService.loadCatalog].
+class Cs2Catalog {
+  final List<CS2Item> items;
+  final Map<String, CaseContents> caseContents;
+
+  const Cs2Catalog({
+    required this.items,
+    this.caseContents = const {},
+  });
+}
+
 /// Fetches and caches the full CS2 item catalog from ByMykel/CSGO-API.
 ///
 /// Pulls skins, stickers, cases (crates), agents, patches, keychains,
 /// collectibles, music kits, and graffiti — expands each skin into one
 /// entry per (wear × StatTrak × Souvenir) so a substring match on
-/// market_hash_name works for every tradeable variant.
+/// market_hash_name works for every tradeable variant. Also extracts
+/// each container's `contains` + `contains_rare` list so the detail
+/// screen can show "this case drops …".
 ///
 /// The cache is versioned and persists across restarts. It refreshes
 /// only when the user explicitly taps refresh or when the cache is
@@ -21,7 +112,7 @@ import '../models/cs2_item.dart';
 class Cs2DatabaseService {
   static const _base = 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en';
   static const _cacheFile = 'cs2_database_cache.json';
-  static const _cacheVersion = 1;
+  static const _cacheVersion = 2;
   static const _cacheMaxAge = Duration(days: 30);
 
   static const _endpoints = {
@@ -36,20 +127,28 @@ class Cs2DatabaseService {
     'graffiti': '$_base/graffiti.json',
   };
 
+  // Populated during parsing of the 'crates' endpoint.
+  Map<String, CaseContents> _lastCaseContents = const {};
+
   /// Loads the catalog. Uses cache if fresh, otherwise downloads.
   /// Pass [forceRefresh] to bypass the cache.
-  Future<List<CS2Item>> loadCatalog({bool forceRefresh = false}) async {
+  Future<Cs2Catalog> loadCatalog({bool forceRefresh = false}) async {
     if (!forceRefresh) {
       final cached = await _loadCache();
-      if (cached != null) return cached;
+      if (cached != null) {
+        _lastCaseContents = cached.caseContents;
+        return cached;
+      }
     }
-    final items = await _fetchAll();
-    await _saveCache(items);
-    return items;
+    final catalog = await _fetchAll();
+    _lastCaseContents = catalog.caseContents;
+    await _saveCache(catalog);
+    return catalog;
   }
 
-  Future<List<CS2Item>> _fetchAll() async {
+  Future<Cs2Catalog> _fetchAll() async {
     final all = <CS2Item>[];
+    final caseMap = <String, CaseContents>{};
 
     // Fetch all endpoints in parallel — they're independent.
     final results = await Future.wait(_endpoints.entries.map((e) async {
@@ -63,6 +162,25 @@ class Cs2DatabaseService {
         }
         final data = jsonDecode(response.body) as List<dynamic>;
         debugPrint('Catalog: $kind returned ${data.length} raw entries');
+        if (kind == 'crates') {
+          // Side-effect: extract contents into caseMap while we iterate.
+          for (final entry in data) {
+            if (entry is! Map<String, dynamic>) continue;
+            final hash = entry['market_hash_name'] as String?;
+            if (hash == null || hash.isEmpty) continue;
+            final contents = CaseContents(
+              contains: (entry['contains'] as List<dynamic>? ?? [])
+                  .whereType<Map<String, dynamic>>()
+                  .map(CaseDrop.fromByMykel)
+                  .toList(),
+              containsRare: (entry['contains_rare'] as List<dynamic>? ?? [])
+                  .whereType<Map<String, dynamic>>()
+                  .map(CaseDrop.fromByMykel)
+                  .toList(),
+            );
+            if (!contents.isEmpty) caseMap[hash] = contents;
+          }
+        }
         return _parseEntries(kind, data);
       } catch (e) {
         debugPrint('Catalog fetch error for $kind: $e');
@@ -74,8 +192,8 @@ class Cs2DatabaseService {
       all.addAll(list);
     }
 
-    debugPrint('Catalog loaded: ${all.length} total items');
-    return all;
+    debugPrint('Catalog loaded: ${all.length} items, ${caseMap.length} cases with drops');
+    return Cs2Catalog(items: all, caseContents: caseMap);
   }
 
   List<CS2Item> _parseEntries(String kind, List<dynamic> raw) {
@@ -273,7 +391,7 @@ class Cs2DatabaseService {
 
   // ── Cache ─────────────────────────────────────────────────────
 
-  Future<List<CS2Item>?> _loadCache() async {
+  Future<Cs2Catalog?> _loadCache() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/$_cacheFile');
@@ -299,25 +417,39 @@ class Cs2DatabaseService {
       final items = itemsJson
           .map((j) => CS2Item.fromJson(j as Map<String, dynamic>))
           .toList();
-      debugPrint('Loaded ${items.length} catalog items from cache');
-      return items;
+
+      final contentsJson =
+          data['caseContents'] as Map<String, dynamic>? ?? const {};
+      final caseContents = <String, CaseContents>{
+        for (final entry in contentsJson.entries)
+          entry.key:
+              CaseContents.fromJson(entry.value as Map<String, dynamic>),
+      };
+
+      debugPrint(
+          'Loaded ${items.length} catalog items + ${caseContents.length} cases from cache');
+      return Cs2Catalog(items: items, caseContents: caseContents);
     } catch (e) {
       debugPrint('Catalog cache load error: $e');
       return null;
     }
   }
 
-  Future<void> _saveCache(List<CS2Item> items) async {
+  Future<void> _saveCache(Cs2Catalog catalog) async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/$_cacheFile');
       final data = {
         'version': _cacheVersion,
         'timestamp': DateTime.now().millisecondsSinceEpoch,
-        'items': items.map((i) => i.toJson()).toList(),
+        'items': catalog.items.map((i) => i.toJson()).toList(),
+        'caseContents': {
+          for (final e in catalog.caseContents.entries) e.key: e.value.toJson(),
+        },
       };
       await file.writeAsString(jsonEncode(data));
-      debugPrint('Saved ${items.length} catalog items to cache');
+      debugPrint('Saved ${catalog.items.length} catalog items + '
+          '${catalog.caseContents.length} cases to cache');
     } catch (e) {
       debugPrint('Catalog cache save error: $e');
     }
