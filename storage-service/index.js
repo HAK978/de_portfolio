@@ -35,16 +35,24 @@ let user = new SteamUser();
 let csgo = new GlobalOffensive(user);
 let isLoggedIn = false;
 let isGCConnected = false;
+let isBlocked = false; // real Steam client is currently playing CS2
 let steamDisplayName = '';
 let currentRefreshToken = '';
+
+// On-demand GC: we only set gamesPlayed([730]) while a request needs
+// GC, then drop it after [GC_IDLE_MS] of inactivity. Without this,
+// having the VM logged in 24/7 with gamesPlayed([730]) accrues fake
+// CS2 playtime on the user's profile.
+const GC_IDLE_MS = 30 * 1000;
+let gcIdleTimer = null;
 
 // ── Steam event handlers ──────────────────────────────────
 
 user.on('loggedOn', () => {
   console.log('[Steam] Logged in successfully');
   isLoggedIn = true;
-  // Tell Steam we're "playing" CS2 — this triggers GC connection
-  user.gamesPlayed([730], true);
+  // Intentionally do NOT call gamesPlayed([730]) here. GC is brought
+  // up on demand by ensureGCConnected() when an API request needs it.
 });
 
 user.on('accountInfo', (name) => {
@@ -52,15 +60,18 @@ user.on('accountInfo', (name) => {
   console.log(`[Steam] Account: ${name}`);
 });
 
-// Gracefully yield when the real Steam client starts playing,
-// and resume when it stops. This avoids LoggedInElsewhere kicks.
+// When the real Steam client starts/stops playing CS2, track it so
+// ensureGCConnected() can refuse rather than fight the user's
+// foreground session. We never auto-resume — next API request will
+// re-enter the play state if appropriate.
 user.on('playingState', (blocked, playingApp) => {
+  isBlocked = blocked;
   if (blocked) {
-    console.log(`[Steam] Blocked — app ${playingApp} is playing elsewhere. Yielding...`);
-    user.gamesPlayed([]); // stop "playing" so we don't get kicked
+    console.log(`[Steam] Real client started playing ${playingApp} — yielding`);
+    user.gamesPlayed([]);
+    cancelIdleTimer();
   } else {
-    console.log('[Steam] Other session stopped playing. Resuming CS2...');
-    user.gamesPlayed([730], true);
+    console.log('[Steam] Real client stopped playing — VM available on demand');
   }
 });
 
@@ -97,21 +108,14 @@ csgo.on('connectedToGC', () => {
 csgo.on('disconnectedFromGC', (reason) => {
   console.log(`[GC] Disconnected: ${reason}`);
   isGCConnected = false;
-
-  // Re-trigger CS2 play to prompt GC reconnection, if Steam session is alive
-  if (isLoggedIn) {
-    setTimeout(() => {
-      if (isLoggedIn && !isGCConnected) {
-        console.log('[GC] Attempting reconnect by re-sending gamesPlayed...');
-        user.gamesPlayed([730], true);
-      }
-    }, 10000);
-  }
+  // Do NOT auto-reconnect. GC is on-demand now — next API request
+  // calls ensureGCConnected() which sets gamesPlayed([730]) again.
 });
 
-// ── Watchdog: recover from stuck disconnects ──────────────
-// autoRelogin handles most disconnects, but can get stuck.
-// Every 2 minutes: if Steam is down, re-login; if GC is down, re-send gamesPlayed.
+// ── Watchdog: recover from stuck Steam logins ─────────────
+// autoRelogin handles most disconnects but can get stuck. We only
+// watch the Steam login here; GC is on-demand and doesn't need a
+// keep-alive ping.
 setInterval(() => {
   if (!isLoggedIn) {
     console.log('[Watchdog] Steam disconnected — attempting re-login...');
@@ -120,27 +124,84 @@ setInterval(() => {
     } catch (e) {
       console.log('[Watchdog] logOn failed:', e.message);
     }
-  } else if (!isGCConnected) {
-    console.log('[Watchdog] GC disconnected — re-sending gamesPlayed...');
-    user.gamesPlayed([730], true);
   }
 }, 2 * 60 * 1000);
 
-// ── Helper: wait for GC connection ────────────────────────
+// ── Helpers: GC lifecycle ─────────────────────────────────
+
+function cancelIdleTimer() {
+  if (gcIdleTimer) {
+    clearTimeout(gcIdleTimer);
+    gcIdleTimer = null;
+  }
+}
+
+function armIdleTimer() {
+  cancelIdleTimer();
+  gcIdleTimer = setTimeout(() => {
+    if (isGCConnected) {
+      console.log(`[GC] Idle ${GC_IDLE_MS / 1000}s — releasing gamesPlayed([])`);
+      user.gamesPlayed([]);
+    }
+    gcIdleTimer = null;
+  }, GC_IDLE_MS);
+}
 
 function waitForGC(timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     if (isGCConnected) return resolve();
-
     const timeout = setTimeout(() => {
       reject(new Error('GC connection timed out'));
     }, timeoutMs);
-
     csgo.once('connectedToGC', () => {
       clearTimeout(timeout);
       resolve();
     });
   });
+}
+
+/// Polls until csgo.inventory has at least one item, or times out.
+/// Inventory arrives a beat or two after `connectedToGC` fires —
+/// without this wait, the first request after a cold GC connect can
+/// see an empty inventory.
+function waitForInventory(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (csgo.inventory && csgo.inventory.length > 0) return resolve();
+      if (Date.now() - start > timeoutMs) {
+        return reject(new Error('Inventory wait timed out'));
+      }
+      setTimeout(check, 200);
+    };
+    check();
+  });
+}
+
+/// Bring up GC if needed, optionally wait for inventory, then arm
+/// the idle timer. Endpoints call this at the top before touching
+/// `csgo.*` so the VM only counts playtime while it's actually
+/// serving requests.
+async function ensureGCConnected({ needInventory = false } = {}) {
+  if (!isLoggedIn) {
+    throw new Error('Not logged in to Steam — try again in a moment');
+  }
+  if (isBlocked) {
+    throw new Error('Real Steam client is playing CS2 — yielded to it');
+  }
+
+  if (!isGCConnected) {
+    console.log('[GC] On-demand connect: setting gamesPlayed([730])');
+    user.gamesPlayed([730], true);
+    await waitForGC();
+  }
+
+  if (needInventory) {
+    await waitForInventory();
+  }
+
+  // Reset the idle countdown on every successful enter.
+  armIdleTimer();
 }
 
 // ── Helper: interactive login ─────────────────────────────
@@ -236,9 +297,11 @@ app.get('/status', (req, res) => {
 });
 
 // GET /caskets — list all storage units in inventory
-app.get('/caskets', (req, res) => {
-  if (!isGCConnected) {
-    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+app.get('/caskets', async (req, res) => {
+  try {
+    await ensureGCConnected({ needInventory: true });
+  } catch (err) {
+    return res.status(503).json({ error: err.message });
   }
 
   // csgo.inventory is populated by the GC after connecting.
@@ -261,9 +324,11 @@ app.get('/caskets', (req, res) => {
 });
 
 // GET /inventory — raw GC inventory (for debugging)
-app.get('/inventory', (req, res) => {
-  if (!isGCConnected) {
-    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+app.get('/inventory', async (req, res) => {
+  try {
+    await ensureGCConnected({ needInventory: true });
+  } catch (err) {
+    return res.status(503).json({ error: err.message });
   }
 
   const inventory = csgo.inventory || [];
@@ -272,8 +337,10 @@ app.get('/inventory', (req, res) => {
 
 // GET /storage/:casketId — fetch storage unit contents
 app.get('/storage/:casketId', async (req, res) => {
-  if (!isGCConnected) {
-    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+  try {
+    await ensureGCConnected();
+  } catch (err) {
+    return res.status(503).json({ error: err.message });
   }
 
   const casketId = req.params.casketId;
@@ -311,9 +378,11 @@ app.get('/storage/:casketId', async (req, res) => {
 
 // GET /inventory/floats — return float values for all inventory items
 // Uses GC inventory data directly (no inspect requests needed for own items)
-app.get('/inventory/floats', (req, res) => {
-  if (!isGCConnected) {
-    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+app.get('/inventory/floats', async (req, res) => {
+  try {
+    await ensureGCConnected({ needInventory: true });
+  } catch (err) {
+    return res.status(503).json({ error: err.message });
   }
 
   const inventory = csgo.inventory || [];
@@ -344,8 +413,10 @@ app.get('/inventory/floats', (req, res) => {
 
 // GET /inspect?url=... — resolve float from an inspect link
 app.get('/inspect', async (req, res) => {
-  if (!isGCConnected) {
-    return res.status(503).json({ error: 'Not connected to Game Coordinator' });
+  try {
+    await ensureGCConnected();
+  } catch (err) {
+    return res.status(503).json({ error: err.message });
   }
 
   const inspectLink = req.query.url;
@@ -436,20 +507,16 @@ async function start() {
     await loginWithToken(refreshToken);
   }
 
-  // Wait for GC
-  console.log('[GC] Waiting for Game Coordinator...');
-  try {
-    await waitForGC();
-  } catch (err) {
-    console.error('[GC] Failed to connect:', err.message);
-    console.log('[GC] Will keep trying in background. Start the app anyway.');
-  }
+  // GC is now connected on demand by ensureGCConnected() — no
+  // up-front connect, so the VM doesn't accrue CS2 playtime while
+  // it's just sitting idle waiting for requests.
 
   // Start HTTP server — bind 0.0.0.0 so it's reachable from outside
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n[Server] Storage service running on port ${PORT}`);
     console.log(`[Server] Status: http://0.0.0.0:${PORT}/status`);
-    console.log(`[Server] Auth:   ${API_KEY ? 'API key required' : 'OPEN (no API_KEY set)'}\n`);
+    console.log(`[Server] Auth:   ${API_KEY ? 'API key required' : 'OPEN (no API_KEY set)'}`);
+    console.log(`[Server] GC mode: on-demand (idle release after ${GC_IDLE_MS / 1000}s)\n`);
   });
 }
 
