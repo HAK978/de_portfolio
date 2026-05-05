@@ -10,6 +10,7 @@ import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
+import '../../providers/storage_provider.dart';
 import '../../services/firestore_service.dart';
 import '../../widgets/item_card.dart';
 import '../../widgets/portfolio_summary_v2.dart';
@@ -209,6 +210,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final csfloatFetch = ref.watch(csfloatFetchProvider);
     final steamFetching = ref.watch(steamFetchInProgressProvider);
     final csfloatFetching = ref.watch(csfloatFetchInProgressProvider);
+    final storage = ref.watch(storageProvider);
 
     final sources = <PortfolioSource>[
       PortfolioSource(
@@ -225,7 +227,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           final price = i.csfloatPrice ?? i.currentPrice;
           return sum + (price * i.quantity);
         });
-        final unitCount = unit.items.fold(0, (sum, i) => sum + i.quantity);
+        // Fall back to the unit's GC-reported itemCount when contents
+        // haven't been fetched yet (items list is empty until a
+        // /storage/:id roundtrip), so the home total reflects reality.
+        final unitCount = unit.items.isNotEmpty
+            ? unit.items.fold<int>(0, (sum, i) => sum + i.quantity)
+            : unit.itemCount;
         return PortfolioSource(
           label: unit.name,
           icon: Icons.storage_outlined,
@@ -263,15 +270,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const _SyncStatusRow(),
           const SizedBox(height: 12),
 
-          // Price fetch cards — Steam Market + CSFloat (inventory only)
+          // Price fetch cards — Steam Market + CSFloat. Each card's
+          // unified progress = inventory fetch + all storage units.
           _PriceFetchCard(
             priceFetch: priceFetch,
             itemCount: items.length,
             label: 'Steam Market',
             icon: Icons.attach_money,
             disabled: steamFetching,
+            extraFetched: storage.steamBatchFetched,
+            extraTotal: storage.steamBatchTotal,
             onFetch: () => ref.read(priceFetchProvider.notifier).fetchPrices(),
-            onCancel: () => ref.read(priceFetchProvider.notifier).cancel(),
+            onCancel: () {
+              ref.read(priceFetchProvider.notifier).cancel();
+              // Also break the storage tail (each unit's stream loop
+              // checks the cancel flag at the next yield).
+              ref.read(storageProvider.notifier).cancelAllPrices();
+            },
           ),
           const SizedBox(height: 8),
           _PriceFetchCard(
@@ -281,8 +296,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             icon: Icons.storefront,
             iconColor: Colors.blueAccent,
             disabled: csfloatFetching,
+            extraFetched: storage.csfloatBatchFetched,
+            extraTotal: storage.csfloatBatchTotal,
             onFetch: () => ref.read(csfloatFetchProvider.notifier).fetchPrices(),
-            onCancel: () => ref.read(csfloatFetchProvider.notifier).cancel(),
+            onCancel: () {
+              ref.read(csfloatFetchProvider.notifier).cancel();
+              ref.read(storageProvider.notifier).cancelAllPrices();
+            },
           ),
           const SizedBox(height: 4),
           const _LastUpdatedLabel(),
@@ -331,6 +351,8 @@ class _PriceFetchCard extends StatelessWidget {
   final IconData icon;
   final Color? iconColor;
   final bool disabled;
+  final int extraFetched;
+  final int extraTotal;
   final VoidCallback onFetch;
   final VoidCallback onCancel;
 
@@ -341,19 +363,31 @@ class _PriceFetchCard extends StatelessWidget {
     required this.icon,
     this.iconColor,
     required this.disabled,
+    required this.extraFetched,
+    required this.extraTotal,
     required this.onFetch,
     required this.onCancel,
   });
 
   @override
   Widget build(BuildContext context) {
+    final unifiedFetched = priceFetch.fetched + extraFetched;
+    final unifiedTotal = priceFetch.total + extraTotal;
+    final unifiedPercent =
+        unifiedTotal > 0 ? unifiedFetched / unifiedTotal : 0.0;
+    final inventoryFetching = priceFetch.isFetching;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (priceFetch.isFetching) ...[
+            if (disabled) ...[
+              // Single unified progress bar covering inventory + all
+              // loaded storage units. Stays busy until both layers are
+              // actually finished, so the home total can't tick up
+              // mysteriously after the card says "Updated".
               Row(
                 children: [
                   const SizedBox(
@@ -364,7 +398,7 @@ class _PriceFetchCard extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      '$label: ${priceFetch.fetched}/${priceFetch.total}',
+                      '$label: $unifiedFetched/$unifiedTotal',
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ),
@@ -378,41 +412,18 @@ class _PriceFetchCard extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
-                  value: priceFetch.percent,
+                  value: unifiedPercent,
                   minHeight: 6,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
-                priceFetch.currentItem,
+                inventoryFetching
+                    ? priceFetch.currentItem
+                    : 'Refreshing storage units...',
                 style: TextStyle(color: Colors.grey[500], fontSize: 11),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-              ),
-            ] else if (disabled) ...[
-              // Inventory finished but storage units are still being
-              // priced in the background. Keep the card "busy" so the
-              // home total ticking up isn't a mystery.
-              Row(
-                children: [
-                  const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      '$label: refreshing storage units...',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const ClipRRect(
-                borderRadius: BorderRadius.all(Radius.circular(4)),
-                child: LinearProgressIndicator(minHeight: 6),
               ),
             ] else if (priceFetch.isDone) ...[
               Row(

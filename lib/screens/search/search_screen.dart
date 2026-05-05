@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../models/cs2_item.dart';
 import '../../providers/cs2_database_provider.dart';
+import '../../providers/search_compare_provider.dart';
 import '../../providers/search_history_provider.dart';
 import '../../providers/search_prices_provider.dart';
 import '../../theme/app_theme.dart';
@@ -487,6 +488,18 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     );
   }
 
+  void _showCompareSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => const _CompareSheet(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final catalogAsync = ref.watch(cs2DatabaseProvider);
@@ -519,6 +532,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             tooltip: 'Filters',
             onPressed: catalogAsync.isLoading ? null : _showFilterSheet,
           ),
+          _CompareIconButton(onTap: _showCompareSheet),
           PopupMenuButton<SearchSortOption>(
             icon: const Icon(Icons.sort),
             tooltip: 'Sort',
@@ -1023,6 +1037,11 @@ class _SearchResultCard extends ConsumerWidget {
                     csfloat: cfPrice,
                     csfloatFetched: cfFetched,
                   ),
+                  // Compare toggle: pin/unpin the item to the cross-search
+                  // comparison list. Hidden for Recent rows (where the X
+                  // button takes its slot).
+                  if (onDismiss == null)
+                    _CompareToggle(marketHashName: hash),
                   if (onDismiss != null)
                     IconButton(
                       icon: const Icon(Icons.close, size: 18),
@@ -1037,6 +1056,227 @@ class _SearchResultCard extends ConsumerWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Pin/unpin a single item to the compare list. Watches a select-scoped
+/// view of the list so only this row rebuilds when its own state flips.
+class _CompareToggle extends ConsumerWidget {
+  final String marketHashName;
+
+  const _CompareToggle({required this.marketHashName});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pinned = ref.watch(searchCompareProvider
+        .select((list) => list.contains(marketHashName)));
+    return IconButton(
+      icon: Icon(
+        pinned ? Icons.bookmark : Icons.bookmark_outline,
+        size: 20,
+      ),
+      color: pinned ? Colors.amberAccent : Colors.white38,
+      visualDensity: VisualDensity.compact,
+      tooltip: pinned ? 'Remove from compare' : 'Add to compare',
+      onPressed: () =>
+          ref.read(searchCompareProvider.notifier).toggle(marketHashName),
+    );
+  }
+}
+
+/// App-bar icon for the compare list. Shows a count badge when
+/// non-empty so the user always knows how many they've pinned.
+class _CompareIconButton extends ConsumerWidget {
+  final VoidCallback onTap;
+
+  const _CompareIconButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(searchCompareProvider).length;
+    return IconButton(
+      icon: Badge(
+        label: count > 0 ? Text('$count') : null,
+        isLabelVisible: count > 0,
+        child: const Icon(Icons.bookmark_border),
+      ),
+      tooltip: 'Compare list',
+      onPressed: count == 0 ? null : onTap,
+    );
+  }
+}
+
+/// Bottom sheet showing pinned items with prices, a bulk "Load prices"
+/// button that targets just this list, plus per-row remove + clear all.
+class _CompareSheet extends ConsumerWidget {
+  const _CompareSheet();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pinned = ref.watch(searchCompareProvider);
+    final catalog = ref.watch(cs2DatabaseProvider).when(
+          data: (items) => items,
+          loading: () => const <CS2Item>[],
+          error: (_, _) => const <CS2Item>[],
+        );
+    final byHash = {for (final i in catalog) i.marketHashName: i};
+    final items = pinned
+        .map((h) => byHash[h])
+        .whereType<CS2Item>()
+        .toList();
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.95,
+      maxChildSize: 1.0,
+      minChildSize: 0.4,
+      builder: (context, scrollController) {
+        return Column(
+          children: [
+            const SizedBox(height: 8),
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.grey[600],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.bookmark, color: Colors.amberAccent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Compare (${items.length})',
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  if (items.isNotEmpty)
+                    TextButton(
+                      onPressed: () => ref
+                          .read(searchCompareProvider.notifier)
+                          .clear(),
+                      child: const Text('Clear'),
+                    ),
+                ],
+              ),
+            ),
+            if (items.isNotEmpty) const _CompareLoadPricesButton(),
+            Expanded(
+              child: items.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Text(
+                          'Tap the bookmark icon on any search result to add it here, then load prices for the whole list at once.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey[500]),
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: scrollController,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: items.length,
+                      itemBuilder: (context, i) {
+                        final item = items[i];
+                        return _SearchResultCard(
+                          item: item,
+                          onTap: () {
+                            ref
+                                .read(searchHistoryProvider.notifier)
+                                .record(item.marketHashName);
+                            // Carry already-fetched prices through.
+                            final prices = ref.read(searchPricesProvider);
+                            final enriched = item.copyWith(
+                              currentPrice:
+                                  prices.steam[item.marketHashName] ??
+                                      item.currentPrice,
+                              csfloatPrice:
+                                  prices.csfloat[item.marketHashName] ??
+                                      item.csfloatPrice,
+                            );
+                            Navigator.pop(context);
+                            context.push('/search/item', extra: enriched);
+                          },
+                          onDismiss: () => ref
+                              .read(searchCompareProvider.notifier)
+                              .remove(item.marketHashName),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _CompareLoadPricesButton extends ConsumerWidget {
+  const _CompareLoadPricesButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pinned = ref.watch(searchCompareProvider);
+    final catalog = ref.watch(cs2DatabaseProvider).when(
+          data: (items) => items,
+          loading: () => const <CS2Item>[],
+          error: (_, _) => const <CS2Item>[],
+        );
+    final prices = ref.watch(searchPricesProvider);
+
+    final byHash = {for (final i in catalog) i.marketHashName: i};
+    final items = pinned
+        .map((h) => byHash[h])
+        .whereType<CS2Item>()
+        .toList();
+
+    var unpriced = 0;
+    var anyLoading = false;
+    for (final item in items) {
+      final hash = item.marketHashName;
+      if (!prices.steam.containsKey(hash) ||
+          !prices.csfloat.containsKey(hash)) {
+        unpriced++;
+      }
+      if (prices.loading.contains(hash)) anyLoading = true;
+    }
+
+    if (unpriced == 0 && !anyLoading) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          icon: anyLoading
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.attach_money, size: 18),
+          label: Text(
+            anyLoading
+                ? 'Loading prices...'
+                : 'Load prices for $unpriced item${unpriced == 1 ? '' : 's'}',
+          ),
+          onPressed: anyLoading
+              ? null
+              : () => ref
+                  .read(searchPricesProvider.notifier)
+                  .fetchForItems(items),
         ),
       ),
     );

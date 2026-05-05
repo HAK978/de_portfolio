@@ -425,10 +425,20 @@ final csfloatPortfolioValueProvider = Provider<double>((ref) {
 
 /// Total number of items (counting quantities).
 /// Includes both main inventory and storage units.
+///
+/// For storage units whose contents haven't been fetched yet (loaded
+/// from cache but never expanded), falls back to the GC-reported
+/// `itemCount` so the home total isn't misleadingly low when units
+/// haven't been opened.
 final totalItemCountProvider = Provider<int>((ref) {
   final invCount = ref.watch(inventoryItemCountProvider);
-  final storageItems = ref.watch(_storageItemsProvider);
-  final storCount = storageItems.fold(0, (sum, item) => sum + item.quantity);
+  final units = ref.watch(storageUnitsProvider);
+  final storCount = units.fold<int>(0, (sum, u) {
+    if (u.items.isNotEmpty) {
+      return sum + u.items.fold<int>(0, (s, i) => s + i.quantity);
+    }
+    return sum + u.itemCount;
+  });
   return invCount + storCount;
 });
 

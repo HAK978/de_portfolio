@@ -131,6 +131,15 @@ class StorageState {
   final Map<String, PricingProgress> pricingProgress;
   final String? error;
 
+  /// Cumulative item-level progress across all storage units in the
+  /// CURRENT batch (set by [fetchAllStorageSteamPrices] /
+  /// [fetchAllStorageCsfloatPrices]). Lets the home progress bar show
+  /// inventory + storage as a single fetched/total pair.
+  final int steamBatchFetched;
+  final int steamBatchTotal;
+  final int csfloatBatchFetched;
+  final int csfloatBatchTotal;
+
   const StorageState({
     this.isLoading = false,
     this.units = const [],
@@ -138,6 +147,10 @@ class StorageState {
     this.pricingCaskets = const {},
     this.pricingProgress = const {},
     this.error,
+    this.steamBatchFetched = 0,
+    this.steamBatchTotal = 0,
+    this.csfloatBatchFetched = 0,
+    this.csfloatBatchTotal = 0,
   });
 
   StorageState copyWith({
@@ -147,6 +160,10 @@ class StorageState {
     Set<String>? pricingCaskets,
     Map<String, PricingProgress>? pricingProgress,
     String? error,
+    int? steamBatchFetched,
+    int? steamBatchTotal,
+    int? csfloatBatchFetched,
+    int? csfloatBatchTotal,
   }) {
     return StorageState(
       isLoading: isLoading ?? this.isLoading,
@@ -155,6 +172,10 @@ class StorageState {
       pricingCaskets: pricingCaskets ?? this.pricingCaskets,
       pricingProgress: pricingProgress ?? this.pricingProgress,
       error: error,
+      steamBatchFetched: steamBatchFetched ?? this.steamBatchFetched,
+      steamBatchTotal: steamBatchTotal ?? this.steamBatchTotal,
+      csfloatBatchFetched: csfloatBatchFetched ?? this.csfloatBatchFetched,
+      csfloatBatchTotal: csfloatBatchTotal ?? this.csfloatBatchTotal,
     );
   }
 }
@@ -167,11 +188,45 @@ class StorageNotifier extends Notifier<StorageState> {
   static const _cachePrefix = 'storage_cache_';
   static const _unitsIndexFile = 'storage_units_index.json';
 
+  // Cancellation flags for the price-fetch streams. Flipping to true
+  // causes the active `await for` to bail at the next yield (or
+  // between units in the per-unit loops). Reset to false at the start
+  // of every new fetch.
+  bool _steamCanceled = false;
+  bool _csfloatCanceled = false;
+
   @override
   StorageState build() {
     // Fire off async cache load — state starts empty, updates when cache loads
     _loadCachedUnits();
     return const StorageState();
+  }
+
+  /// Stop any in-flight Steam Market or CSFloat price fetches across
+  /// all loaded storage units. The Cancel button on the home price
+  /// cards calls this in addition to cancelling the inventory stream.
+  void cancelAllPrices() {
+    _steamCanceled = true;
+    _csfloatCanceled = true;
+    state = state.copyWith(
+      pricingCaskets: const {},
+      pricingProgress: const {},
+      steamBatchFetched: 0,
+      steamBatchTotal: 0,
+      csfloatBatchFetched: 0,
+      csfloatBatchTotal: 0,
+    );
+  }
+
+  /// Seed the Steam batch total upfront when an inventory price fetch
+  /// kicks off, so the home progress bar covers (inventory + storage)
+  /// from the start instead of jumping mid-progress.
+  void seedSteamBatchTotal(int total) {
+    state = state.copyWith(steamBatchFetched: 0, steamBatchTotal: total);
+  }
+
+  void seedCsfloatBatchTotal(int total) {
+    state = state.copyWith(csfloatBatchFetched: 0, csfloatBatchTotal: total);
   }
 
   /// Loads cached unit index + each unit's cached items from disk.
@@ -364,21 +419,49 @@ class StorageNotifier extends Notifier<StorageState> {
 
   /// Fetch Steam prices for every loaded storage unit (called from home screen).
   Future<void> fetchAllStorageSteamPrices() async {
+    _steamCanceled = false;
+    final total = state.units.fold<int>(
+        0,
+        (sum, u) =>
+            sum + u.items.map((i) => i.marketHashName).toSet().length);
+    state = state.copyWith(
+      steamBatchFetched: 0,
+      steamBatchTotal: total,
+    );
     for (final unit in state.units) {
+      if (_steamCanceled) break;
       if (unit.items.isNotEmpty) {
         await _fetchMarketData(unit.id, unit.items);
       }
     }
+    state = state.copyWith(
+      steamBatchFetched: 0,
+      steamBatchTotal: 0,
+    );
     saveLastPriceFetchTimestamp();
   }
 
   /// Fetch CSFloat prices for every loaded storage unit (called from home screen).
   Future<void> fetchAllStorageCsfloatPrices() async {
+    _csfloatCanceled = false;
+    final total = state.units.fold<int>(
+        0,
+        (sum, u) =>
+            sum + u.items.map((i) => i.marketHashName).toSet().length);
+    state = state.copyWith(
+      csfloatBatchFetched: 0,
+      csfloatBatchTotal: total,
+    );
     for (final unit in state.units) {
+      if (_csfloatCanceled) break;
       if (unit.items.isNotEmpty) {
         await _fetchCsfloatData(unit.id, unit.items);
       }
     }
+    state = state.copyWith(
+      csfloatBatchFetched: 0,
+      csfloatBatchTotal: 0,
+    );
   }
 
   /// Fetch Steam + CSFloat prices in parallel.
@@ -404,7 +487,11 @@ class StorageNotifier extends Notifier<StorageState> {
     );
 
     final priceService = PriceService();
-    final marketHashNames = items.map((i) => i.marketHashName).toList();
+    // Dedupe so we don't waste API calls on duplicate hash names
+    // within the same unit (and so the per-unit total matches what
+    // the fetcher actually yields).
+    final marketHashNames =
+        items.map((i) => i.marketHashName).toSet().toList();
     final total = marketHashNames.length;
 
     state = state.copyWith(
@@ -415,7 +502,9 @@ class StorageNotifier extends Notifier<StorageState> {
     );
 
     try {
+      var lastResultCount = 0;
       await for (final results in priceService.fetchMarketData(marketHashNames)) {
+        if (_steamCanceled) break;
         // Build a map of updates to merge
         final steamUpdates = <String, MarketItemResult>{};
         for (final result in results.entries) {
@@ -433,11 +522,17 @@ class StorageNotifier extends Notifier<StorageState> {
           );
         }, recalcValue: true);
 
+        // Add only the new items priced since the last yield to the
+        // cumulative batch counter — the storage stream emits the
+        // running total per unit, not just the delta.
+        final delta = results.length - lastResultCount;
+        lastResultCount = results.length;
         state = state.copyWith(
           pricingProgress: {
             ...state.pricingProgress,
             key: PricingProgress(fetched: results.length, total: total, label: 'Steam'),
           },
+          steamBatchFetched: state.steamBatchFetched + delta,
         );
       }
 
@@ -475,7 +570,11 @@ class StorageNotifier extends Notifier<StorageState> {
       pricingCaskets: {...state.pricingCaskets, key},
     );
 
-    final marketHashNames = items.map((i) => i.marketHashName).toList();
+    // Dedupe so we don't waste API calls on duplicate hash names
+    // within the same unit (and so the per-unit total matches what
+    // the fetcher actually yields).
+    final marketHashNames =
+        items.map((i) => i.marketHashName).toSet().toList();
     final total = marketHashNames.length;
 
     state = state.copyWith(
@@ -488,7 +587,9 @@ class StorageNotifier extends Notifier<StorageState> {
     try {
       int fetched = 0;
 
+      var lastFetched = 0;
       await for (final progress in service.fetchPrices(marketHashNames)) {
+        if (_csfloatCanceled) break;
         fetched = progress.fetched;
 
         final prices = progress.prices;
@@ -498,11 +599,14 @@ class StorageNotifier extends Notifier<StorageState> {
           return item.copyWith(csfloatPrice: price);
         }, recalcValue: true);
 
+        final delta = fetched - lastFetched;
+        lastFetched = fetched;
         state = state.copyWith(
           pricingProgress: {
             ...state.pricingProgress,
             key: PricingProgress(fetched: fetched, total: total, label: 'CSFloat'),
           },
+          csfloatBatchFetched: state.csfloatBatchFetched + delta,
         );
       }
 

@@ -47,9 +47,11 @@ class StorageService {
 
   /// Fetch the list of storage units (caskets) from inventory.
   Future<List<CasketInfo>> getCaskets() async {
+    // 30s allows for the VM's cold GC-connect path: gamesPlayed([730])
+    // → waitForGC (up to ~15s) → waitForInventory (up to ~10s).
     final response = await http
         .get(Uri.parse('$baseUrl/caskets'), headers: _headers)
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 30));
 
     if (response.statusCode != 200) {
       throw Exception('Failed to fetch caskets (${response.statusCode})');
@@ -115,7 +117,7 @@ class StorageService {
   Future<Map<String, List<FloatData>>> getInventoryFloats() async {
     final response = await http
         .get(Uri.parse('$baseUrl/inventory/floats'), headers: _headers)
-        .timeout(const Duration(seconds: 15));
+        .timeout(const Duration(seconds: 30));
 
     if (response.statusCode != 200) {
       throw Exception('Failed to fetch inventory floats (${response.statusCode})');

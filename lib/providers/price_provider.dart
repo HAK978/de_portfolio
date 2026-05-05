@@ -123,6 +123,15 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
       currentItem: 'Starting...',
     );
 
+    // Pre-compute the storage tail's total so the unified progress bar
+    // on home doesn't jump partway through. Use unique hash names per
+    // unit to match what the storage fetcher actually iterates over.
+    final storageTotal = ref.read(storageProvider).units.fold<int>(
+        0,
+        (sum, u) =>
+            sum + u.items.map((i) => i.marketHashName).toSet().length);
+    ref.read(storageProvider.notifier).seedSteamBatchTotal(storageTotal);
+
     final service = ref.read(priceServiceProvider);
     Map<String, double> lastPrices = {};
 
@@ -338,6 +347,13 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
       total: uniqueNames.length,
       currentItem: 'Starting...',
     );
+
+    // Pre-seed storage tail total so the unified bar doesn't jump.
+    final storageTotal = ref.read(storageProvider).units.fold<int>(
+        0,
+        (sum, u) =>
+            sum + u.items.map((i) => i.marketHashName).toSet().length);
+    ref.read(storageProvider.notifier).seedCsfloatBatchTotal(storageTotal);
 
     // Re-read service now that key is guaranteed loaded
     final service = ref.read(csfloatServiceProvider);
