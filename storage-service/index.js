@@ -164,7 +164,13 @@ function waitForGC(timeoutMs = 15000) {
 /// Inventory arrives a beat or two after `connectedToGC` fires —
 /// without this wait, the first request after a cold GC connect can
 /// see an empty inventory.
-function waitForInventory(timeoutMs = 10000) {
+///
+/// 25s default: on the very first cold connect of the day, GC may
+/// send connectedToGC fast but take >10s to push the inventory data,
+/// especially after the previous idle-drop. Anything faster than
+/// that on hot paths still resolves immediately because the check
+/// fires every 200ms.
+function waitForInventory(timeoutMs = 25000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
