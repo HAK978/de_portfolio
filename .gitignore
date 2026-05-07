@@ -51,6 +51,11 @@ context.txt
 cs2_app.md
 image.png
 what_i_studied.txt
+# Internal notes — keep local, don't publish (they reference unfixed
+# security findings until those are addressed)
+polish_backlog.md
+audit_findings.md
+audit_proposed_fixes.md
 .claude/
 functions/node_modules/
 functions/lib/
