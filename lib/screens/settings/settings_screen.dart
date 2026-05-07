@@ -507,14 +507,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               onTap: () async {
                 final service = ref.read(priceHistoryServiceProvider);
                 await service.clearCache();
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Price history cache cleared'),
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                }
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Price history cache cleared'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
               },
             ),
           ),

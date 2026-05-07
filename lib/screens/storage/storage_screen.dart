@@ -496,17 +496,21 @@ class _ConnectionBar extends ConsumerWidget {
                   size: 12,
                   color: status.isReady
                       ? Colors.green
-                      : status.reachable
-                          ? Colors.orange
-                          : Colors.red,
+                      : status.unauthorized
+                          ? Colors.amber
+                          : status.reachable
+                              ? Colors.orange
+                              : Colors.red,
                 ),
                 const SizedBox(width: 8),
                 Text(
                   status.isReady
                       ? 'GC Connected'
-                      : status.reachable
-                          ? 'Service up, GC disconnected'
-                          : 'Service unreachable',
+                      : status.unauthorized
+                          ? 'Wrong API key — check Settings'
+                          : status.reachable
+                              ? 'Service up, GC disconnected'
+                              : 'Service unreachable',
                   style: TextStyle(
                     color: Colors.grey[400],
                     fontSize: 13,

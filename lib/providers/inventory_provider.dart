@@ -21,6 +21,12 @@ final steamIdProvider = NotifierProvider<SteamIdNotifier, String>(
 class SteamIdNotifier extends Notifier<String> {
   static const _fileName = 'steam_id.txt';
 
+  // Tracks whether the user has explicitly mutated state (sign-in or
+  // sign-out) since `build()`. If they have, the async disk-load
+  // mustn't clobber that intent — even if state is currently empty
+  // (which could mean "just signed out", not "haven't loaded yet").
+  bool _userMutated = false;
+
   @override
   String build() {
     // Keep alive so Riverpod 3's auto-dispose doesn't reset auth state
@@ -32,6 +38,7 @@ class SteamIdNotifier extends Notifier<String> {
   }
 
   void set(String value) {
+    _userMutated = true;
     state = value;
     _saveId(value);
   }
@@ -42,8 +49,10 @@ class SteamIdNotifier extends Notifier<String> {
       final file = File('${dir.path}/$_fileName');
       if (file.existsSync()) {
         final id = await file.readAsString();
-        // Don't overwrite if already set (e.g. sign-in completed before disk read)
-        if (id.trim().isNotEmpty && state.isEmpty) {
+        // Don't apply the loaded value if the user has already mutated
+        // state (signed in with a different ID, or signed out and we
+        // shouldn't auto-resurrect them).
+        if (id.trim().isNotEmpty && !_userMutated) {
           debugPrint('Loaded saved Steam ID: $id');
           state = id.trim();
         }

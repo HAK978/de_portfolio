@@ -127,21 +127,14 @@ class Cs2DatabaseService {
     'graffiti': '$_base/graffiti.json',
   };
 
-  // Populated during parsing of the 'crates' endpoint.
-  Map<String, CaseContents> _lastCaseContents = const {};
-
   /// Loads the catalog. Uses cache if fresh, otherwise downloads.
   /// Pass [forceRefresh] to bypass the cache.
   Future<Cs2Catalog> loadCatalog({bool forceRefresh = false}) async {
     if (!forceRefresh) {
       final cached = await _loadCache();
-      if (cached != null) {
-        _lastCaseContents = cached.caseContents;
-        return cached;
-      }
+      if (cached != null) return cached;
     }
     final catalog = await _fetchAll();
-    _lastCaseContents = catalog.caseContents;
     await _saveCache(catalog);
     return catalog;
   }

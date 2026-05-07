@@ -37,6 +37,30 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
         NavigationDelegate(
+          onNavigationRequest: (req) {
+            // Defense-in-depth: only allow navigation to Steam-owned
+            // hosts. The login URL goes through these legitimately
+            // (steamcommunity.com → store.steampowered.com on Guard,
+            // login.steampowered.com for some flows). Anything else
+            // — phishing, malicious iframe, hijacked redirect — is
+            // refused.
+            final host = Uri.tryParse(req.url)?.host ?? '';
+            const allowed = [
+              'steamcommunity.com',
+              'store.steampowered.com',
+              'login.steampowered.com',
+              'help.steampowered.com',
+              'steampowered.com',
+              'akamaihd.net', // Steam's CDN for assets
+              'cloudflare.steamstatic.com', // Steam image CDN
+            ];
+            final ok = allowed.any((d) => host == d || host.endsWith('.$d'));
+            if (!ok) {
+              debugPrint('BLOCKED off-Steam navigation: ${req.url}');
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
           onPageStarted: (url) {
             debugPrint('STARTED: $url');
             if (mounted) setState(() => _isLoading = true);
@@ -220,10 +244,18 @@ class _SteamLoginScreenState extends State<SteamLoginScreen>
       } catch (_) {}
     }
 
-    if (steamId == null && cookie == null) return null;
+    // A cookie without a steamId is useless to the rest of the app —
+    // every consumer of SteamLoginResult guards on steamId.isNotEmpty
+    // before doing anything. Returning null here makes the contract
+    // explicit: callers never see a populated-but-unusable result.
+    if (steamId == null) {
+      debugPrint('Steam ID not found yet (cookie present: ${cookie != null}) '
+          '— extraction not ready');
+      return null;
+    }
 
     debugPrint('Steam ID: $steamId, cookie: ${cookie != null ? "yes" : "no"}');
-    return SteamLoginResult(steamId: steamId ?? '', steamLoginCookie: cookie);
+    return SteamLoginResult(steamId: steamId, steamLoginCookie: cookie);
   }
 
   @override

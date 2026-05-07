@@ -35,6 +35,16 @@ class PriceChart extends StatefulWidget {
 }
 
 class _PriceChartState extends State<PriceChart> {
+  /// Switch to hourly granularity once a visible day has at least this
+  /// many hourly samples — daily aggregation feels choppy below this
+  /// density.
+  static const _hourlyDailyThreshold = 10;
+
+  /// Y-axis reserved width on the left edge of fl_chart's
+  /// LineChart — used to translate tap positions into data indices.
+  /// Must match the SideTitlesData reservedSize below.
+  static const _yAxisReservedWidth = 52.0;
+
   ChartRange _selectedRange = ChartRange.month;
   int? _touchedIndex;
 
@@ -50,7 +60,6 @@ class _PriceChartState extends State<PriceChart> {
   double _baseViewCenter = 0.5;
   Offset? _gestureStartFocal;
   bool _gestureDidMove = false;
-
 
   Offset? _pointerDownPos;
   final _chartKey = GlobalKey();
@@ -141,7 +150,8 @@ class _PriceChartState extends State<PriceChart> {
           .where(
               (p) => !p.date.isBefore(visStart) && !p.date.isAfter(visEnd))
           .toList();
-      if (hourly.isNotEmpty && hourly.length / visDays >= 10) {
+      if (hourly.isNotEmpty &&
+          hourly.length / visDays >= _hourlyDailyThreshold) {
         return hourly;
       }
     }
@@ -242,9 +252,8 @@ class _PriceChartState extends State<PriceChart> {
     final data = _getVisibleData();
     if (data.isEmpty) return;
     final cw = _chartPixelWidth;
-    final dataAreaStart = 52.0; // left axis reserved size
-    final dataAreaWidth = cw - dataAreaStart;
-    final dataX = localPosition.dx - dataAreaStart;
+    final dataAreaWidth = cw - _yAxisReservedWidth;
+    final dataX = localPosition.dx - _yAxisReservedWidth;
     if (dataX < 0 || dataX > dataAreaWidth || dataAreaWidth <= 0) return;
     final index = (dataX / dataAreaWidth * (data.length - 1))
         .round()
@@ -416,7 +425,7 @@ class _PriceChartState extends State<PriceChart> {
                   leftTitles: AxisTitles(
                     sideTitles: SideTitles(
                       showTitles: true,
-                      reservedSize: 52,
+                      reservedSize: _yAxisReservedWidth,
                       getTitlesWidget: (value, meta) {
                         if (value == meta.min || value == meta.max) {
                           return const SizedBox.shrink();

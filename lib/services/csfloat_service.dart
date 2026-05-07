@@ -190,6 +190,24 @@ class CsfloatService {
     int noListing = 0;
 
     for (final name in toFetch) {
+      // Preflight throttle using the rate-limit headers from the last
+      // response. If we're nearly out of budget, sleep until the
+      // window resets — same pattern the search drainer uses, applied
+      // here so the inventory + storage batch fetches don't blindly
+      // burn the remaining quota and trip 429s.
+      final rl = _lastRateLimit;
+      if (rl != null && rl.remaining <= 2) {
+        final wait = rl.timeUntilReset();
+        if (wait > Duration.zero) {
+          final clamped = Duration(
+            seconds: (wait.inSeconds + 1).clamp(1, 120),
+          );
+          debugPrint('CSF batch preflight: remaining=${rl.remaining}, '
+              'waiting ${clamped.inSeconds}s until reset');
+          await Future.delayed(clamped);
+        }
+      }
+
       final price = await fetchPrice(name);
 
       if (price != null) {

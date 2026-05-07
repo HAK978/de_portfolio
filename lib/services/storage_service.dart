@@ -21,12 +21,39 @@ class StorageService {
     if (apiKey != null && apiKey!.isNotEmpty) 'X-Api-Key': apiKey!,
   };
 
+  /// Pull the VM's `error` field out of a non-200 response body so the
+  /// UI can show "Real Steam client is playing CS2" instead of an
+  /// opaque "(503)". Falls back to the status code if the body isn't
+  /// JSON or doesn't carry an `error` key.
+  Exception _errorFromResponse(http.Response response, String label) {
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map<String, dynamic>) {
+        final msg = body['error'];
+        if (msg is String && msg.isNotEmpty) {
+          return Exception(msg);
+        }
+      }
+    } catch (_) {}
+    return Exception('$label (${response.statusCode})');
+  }
+
   /// Check if the service is running and connected to GC.
   Future<StorageStatus> getStatus() async {
     try {
       final response = await http
           .get(Uri.parse('$baseUrl/status'), headers: _headers)
           .timeout(const Duration(seconds: 5));
+
+      // Distinguish "wrong API key" from "no service at all" so the
+      // ConnectionBar can prompt the user to fix the key instead of
+      // troubleshooting an unreachable VM.
+      if (response.statusCode == 401) {
+        return const StorageStatus(
+          reachable: true,
+          unauthorized: true,
+        );
+      }
 
       if (response.statusCode != 200) {
         return const StorageStatus(reachable: false);
@@ -54,7 +81,7 @@ class StorageService {
         .timeout(const Duration(seconds: 30));
 
     if (response.statusCode != 200) {
-      throw Exception('Failed to fetch caskets (${response.statusCode})');
+      throw _errorFromResponse(response, 'Failed to fetch caskets');
     }
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -78,7 +105,7 @@ class StorageService {
         .timeout(const Duration(seconds: 60));
 
     if (response.statusCode != 200) {
-      throw Exception('Failed to fetch casket contents (${response.statusCode})');
+      throw _errorFromResponse(response, 'Failed to fetch casket contents');
     }
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -120,7 +147,7 @@ class StorageService {
         .timeout(const Duration(seconds: 30));
 
     if (response.statusCode != 200) {
-      throw Exception('Failed to fetch inventory floats (${response.statusCode})');
+      throw _errorFromResponse(response, 'Failed to fetch inventory floats');
     }
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -169,12 +196,16 @@ class StorageStatus {
   final bool steamConnected;
   final bool gcConnected;
   final String displayName;
+  /// True when the VM responded with 401 (wrong/missing API key). Lets
+  /// the UI show a distinct message instead of generic "unreachable".
+  final bool unauthorized;
 
   const StorageStatus({
     required this.reachable,
     this.steamConnected = false,
     this.gcConnected = false,
     this.displayName = '',
+    this.unauthorized = false,
   });
 
   bool get isReady => reachable && steamConnected && gcConnected;

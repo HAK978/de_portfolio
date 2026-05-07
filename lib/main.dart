@@ -7,6 +7,7 @@ import 'package:workmanager/workmanager.dart';
 import 'app.dart';
 import 'background/price_refresh_task.dart';
 import 'firebase_options.dart';
+import 'providers/price_provider.dart';
 import 'theme/app_theme.dart';
 
 /// Returns the duration until the next 3-hour slot: 12 AM, 3, 6, 9, 12 PM, 3, 6, 9.
@@ -31,7 +32,9 @@ void callbackDispatcher() {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  WakelockPlus.enable();
+  // Wakelock is now scoped to active price fetches (see CS2PortfolioApp
+  // below) instead of staying on for the whole app session, which was
+  // burning battery while the user just browsed.
 
   // Register the 3-hour background price refresh
   await Workmanager().initialize(callbackDispatcher);
@@ -64,11 +67,22 @@ void main() async {
   );
 }
 
-class CS2PortfolioApp extends StatelessWidget {
+class CS2PortfolioApp extends ConsumerWidget {
   const CS2PortfolioApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Toggle wakelock with the lifetime of any in-flight price fetch
+    // (inventory or any loaded storage unit, Steam or CSFloat). Idle
+    // browsing of cached prices doesn't keep the screen on.
+    ref.listen<bool>(anyPriceFetchInProgressProvider, (prev, next) {
+      if (next) {
+        WakelockPlus.enable();
+      } else {
+        WakelockPlus.disable();
+      }
+    });
+
     return MaterialApp.router(
       title: 'CS2 Portfolio',
       debugShowCheckedModeBanner: false,

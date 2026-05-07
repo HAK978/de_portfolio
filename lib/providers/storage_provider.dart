@@ -405,6 +405,10 @@ class StorageNotifier extends Notifier<StorageState> {
     if (units.isEmpty) return;
     final unit = units.first;
     if (unit.items.isEmpty) return;
+    // Reset the cancel flag at the entry of every direct (non-batch)
+    // fetch — otherwise a previously-cancelled session leaves the flag
+    // stuck at true and the new fetch's loop breaks on first iteration.
+    _steamCanceled = false;
     await _fetchMarketData(casketId, unit.items);
   }
 
@@ -414,6 +418,7 @@ class StorageNotifier extends Notifier<StorageState> {
     if (units.isEmpty) return;
     final unit = units.first;
     if (unit.items.isEmpty) return;
+    _csfloatCanceled = false;
     await _fetchCsfloatData(casketId, unit.items);
   }
 
@@ -470,6 +475,8 @@ class StorageNotifier extends Notifier<StorageState> {
     if (units.isEmpty) return;
     final unit = units.first;
     if (unit.items.isEmpty) return;
+    _steamCanceled = false;
+    _csfloatCanceled = false;
     await Future.wait([
       _fetchMarketData(casketId, unit.items),
       _fetchCsfloatData(casketId, unit.items),
@@ -558,10 +565,14 @@ class StorageNotifier extends Notifier<StorageState> {
     final key = '${casketId}_csfloat';
     if (state.pricingCaskets.contains(key)) return;
 
-    // Wait briefly for API key to load from disk if it hasn't yet
+    // The CSFloat API key loads from disk asynchronously on app start.
+    // Poll briefly so a fast user-action right after launch doesn't
+    // race the disk read; cap at 3s so a genuinely-empty key doesn't
+    // block forever.
     var apiKey = ref.read(csfloatApiKeyProvider);
-    if (apiKey.isEmpty) {
-      await Future.delayed(const Duration(seconds: 2));
+    final waitDeadline = DateTime.now().add(const Duration(seconds: 3));
+    while (apiKey.isEmpty && DateTime.now().isBefore(waitDeadline)) {
+      await Future.delayed(const Duration(milliseconds: 100));
       apiKey = ref.read(csfloatApiKeyProvider);
     }
     final service = CsfloatService(apiKey: apiKey.isNotEmpty ? apiKey : null);

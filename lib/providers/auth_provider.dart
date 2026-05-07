@@ -61,6 +61,8 @@ class AuthState {
       displayName: displayName ?? this.displayName,
       avatarUrl: avatarUrl ?? this.avatarUrl,
       isLoading: isLoading ?? this.isLoading,
+      // Intentional: error is overwritten with the passed value (not
+      // `error ?? this.error`) so callers can clear it by passing null.
       error: error,
     );
   }

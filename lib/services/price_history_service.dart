@@ -101,7 +101,7 @@ class PriceHistoryService {
         final cacheTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
         if (DateTime.now().difference(cacheTime) < _exchangeRateCacheMaxAge) {
           _cachedInrToUsdRate = (data['rate'] as num).toDouble();
-          debugPrint('Exchange rate from cache: ${_cachedInrToUsdRate} INR/USD');
+          debugPrint('Exchange rate from cache: $_cachedInrToUsdRate INR/USD');
           return _cachedInrToUsdRate;
         }
       }
@@ -117,7 +117,7 @@ class PriceHistoryService {
         final rates = data['rates'] as Map<String, dynamic>?;
         if (rates != null && rates.containsKey('INR')) {
           _cachedInrToUsdRate = (rates['INR'] as num).toDouble();
-          debugPrint('Exchange rate fetched: ${_cachedInrToUsdRate} INR/USD');
+          debugPrint('Exchange rate fetched: $_cachedInrToUsdRate INR/USD');
 
           // Save to disk
           try {
@@ -267,42 +267,6 @@ class PriceHistoryService {
     } catch (e) {
       return null;
     }
-  }
-
-  /// Aggregates hourly points into daily averages.
-  ///
-  /// Steam gives data at hour-level granularity which is too noisy
-  /// for a chart. We group by date and take the median price and
-  /// total volume for each day.
-  List<PriceHistoryPoint> _aggregateDaily(List<PriceHistoryPoint> points) {
-    final byDay = <String, List<PriceHistoryPoint>>{};
-
-    for (final point in points) {
-      final key = '${point.date.year}-${point.date.month}-${point.date.day}';
-      byDay.putIfAbsent(key, () => []).add(point);
-    }
-
-    final daily = <PriceHistoryPoint>[];
-    for (final entry in byDay.entries) {
-      final dayPoints = entry.value;
-      // Use median price for the day
-      dayPoints.sort((a, b) => a.price.compareTo(b.price));
-      final medianPrice = dayPoints[dayPoints.length ~/ 2].price;
-      final totalVolume = dayPoints.fold(0, (sum, p) => sum + p.volume);
-
-      daily.add(PriceHistoryPoint(
-        date: DateTime.utc(
-          dayPoints.first.date.year,
-          dayPoints.first.date.month,
-          dayPoints.first.date.day,
-        ),
-        price: medianPrice,
-        volume: totalVolume,
-      ));
-    }
-
-    daily.sort((a, b) => a.date.compareTo(b.date));
-    return daily;
   }
 
   // ── Caching ──────────────────────────────────────────────────

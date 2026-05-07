@@ -73,6 +73,11 @@ class SteamApiService {
     int? totalPages;
     const pageSize = 75;
 
+    // Track 429 retries for the current page so a persistently
+    // rate-limited request can't loop forever. Reset on success.
+    var consecutive429s = 0;
+    const max429Retries = 5;
+
     while (hasMore && !_cancelRequested) {
       final uri = Uri.parse(
         '$_baseUrl/$steamId/730/2?l=english&count=75'
@@ -82,10 +87,19 @@ class SteamApiService {
       final response = await http.get(uri);
 
       if (response.statusCode == 429) {
-        // Rate limited — wait and retry
-        await Future.delayed(const Duration(seconds: 2));
+        consecutive429s++;
+        if (consecutive429s > max429Retries) {
+          throw Exception(
+            'Steam keeps rate-limiting the inventory fetch. '
+            'Wait a minute and try again.',
+          );
+        }
+        // Exponential backoff: 2, 4, 8, 16, 32 seconds.
+        final delay = Duration(seconds: 1 << consecutive429s);
+        await Future.delayed(delay);
         continue;
       }
+      consecutive429s = 0;
 
       if (response.statusCode == 403) {
         throw Exception('Inventory is private. Set it to public in Steam privacy settings.');
