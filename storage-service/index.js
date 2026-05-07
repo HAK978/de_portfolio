@@ -75,19 +75,33 @@ user.on('playingState', (blocked, playingApp) => {
   }
 });
 
+// Coalesce reconnect attempts: if `LoggedInElsewhere` (eresult 6)
+// fires repeatedly within the 30s window, only one timer is active.
+// Without this, multiple stacked `setTimeout`-driven `user.logOn`
+// calls can race the watchdog and pile up reconnects.
+let _reconnectTimer = null;
+
 user.on('error', (err) => {
   console.error('[Steam] Error:', err.message);
   isLoggedIn = false;
   isGCConnected = false;
 
   // LoggedInElsewhere is fatal — autoRelogin won't handle it.
-  // Wait and reconnect automatically.
   if (err.eresult === 6) { // EResult.LoggedInElsewhere
+    if (_reconnectTimer) {
+      console.log('[Steam] Reconnect already pending; skipping duplicate');
+      return;
+    }
     const delaySec = 30;
     console.log(`[Steam] Will reconnect in ${delaySec}s...`);
-    setTimeout(() => {
+    _reconnectTimer = setTimeout(() => {
+      _reconnectTimer = null;
       console.log('[Steam] Reconnecting...');
-      user.logOn({ refreshToken: currentRefreshToken });
+      try {
+        user.logOn({ refreshToken: currentRefreshToken });
+      } catch (e) {
+        console.log('[Steam] logOn threw on reconnect:', e.message);
+      }
     }, delaySec * 1000);
   }
 });
@@ -329,17 +343,11 @@ app.get('/caskets', async (req, res) => {
   res.json({ total: result.length, caskets: result });
 });
 
-// GET /inventory — raw GC inventory (for debugging)
-app.get('/inventory', async (req, res) => {
-  try {
-    await ensureGCConnected({ needInventory: true });
-  } catch (err) {
-    return res.status(503).json({ error: err.message });
-  }
-
-  const inventory = csgo.inventory || [];
-  res.json({ total: inventory.length, items: inventory.slice(0, 5) }); // first 5 for debugging
-});
+// In-flight casket fetches keyed by casketId. Prevents two concurrent
+// /storage/:id calls for the same casket from racing the
+// `globaloffensive` library's per-casket callback (which can return
+// stale results to the wrong request if both are pending).
+const _inflightCaskets = new Set();
 
 // GET /storage/:casketId — fetch storage unit contents
 app.get('/storage/:casketId', async (req, res) => {
@@ -350,6 +358,14 @@ app.get('/storage/:casketId', async (req, res) => {
   }
 
   const casketId = req.params.casketId;
+
+  if (_inflightCaskets.has(casketId)) {
+    return res.status(409).json({
+      error: 'Already fetching this storage unit — wait for it to finish',
+    });
+  }
+  _inflightCaskets.add(casketId);
+
   console.log(`[API] Fetching contents of casket ${casketId}...`);
 
   try {
@@ -379,6 +395,8 @@ app.get('/storage/:casketId', async (req, res) => {
   } catch (err) {
     console.error(`[API] Error fetching casket ${casketId}:`, err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    _inflightCaskets.delete(casketId);
   }
 });
 
