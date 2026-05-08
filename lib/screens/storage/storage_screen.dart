@@ -189,10 +189,11 @@ class StorageScreen extends ConsumerStatefulWidget {
 }
 
 class _StorageScreenState extends ConsumerState<StorageScreen> {
-  final _urlController = TextEditingController();
-  final _apiKeyController = TextEditingController();
   final _searchController = TextEditingController();
-  bool _showUrlInput = false;
+  // Toggles the slide-down connection panel under the link icon. Was
+  // _showUrlInput when the panel held URL/key inputs; those have moved
+  // to Settings, so this is now purely a status + Refresh toggle.
+  bool _showConnectionPanel = false;
   // Externalized expansion state. Keyed by unit id so multiple units
   // can be open simultaneously. Used by the SliverPersistentHeader
   // implementation so each header can pin while its content scrolls.
@@ -201,16 +202,12 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   @override
   void initState() {
     super.initState();
-    _urlController.text = ref.read(storageServiceUrlProvider);
-    _apiKeyController.text = ref.read(storageApiKeyProvider);
     _searchController.text = ref.read(_storageSearchProvider);
     _searchController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
-    _urlController.dispose();
-    _apiKeyController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -469,32 +466,26 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                   ],
                 ),
               ),
-              onPressed: () =>
-                  setState(() => _showUrlInput = !_showUrlInput),
+              onPressed: () => setState(
+                () => _showConnectionPanel = !_showConnectionPanel,
+              ),
             );
           }),
         ],
       ),
       body: Column(
         children: [
-          if (_showUrlInput)
+          if (_showConnectionPanel)
             _ConnectionPanel(
-              urlController: _urlController,
-              apiKeyController: _apiKeyController,
               isLoading: storage.isLoading,
               hasUnits: storage.units.isNotEmpty,
-              onSave: () {
-                ref.read(storageServiceUrlProvider.notifier).set(
-                      _urlController.text.trim(),
-                    );
-                ref.read(storageApiKeyProvider.notifier).set(
-                      _apiKeyController.text.trim(),
-                    );
-                setState(() => _showUrlInput = false);
-              },
               onConnect: () {
                 ref.invalidate(storageStatusProvider);
                 ref.read(storageProvider.notifier).fetchCaskets();
+              },
+              onConfigure: () {
+                setState(() => _showConnectionPanel = false);
+                context.push('/settings');
               },
             ),
 
@@ -588,32 +579,28 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   }
 }
 
-/// Slide-down panel that opens when the user taps the link icon in
-/// the app bar. Combines the connection status, the Refresh/Connect
-/// action, and the service URL + API key inputs in one place — all
-/// the pieces you only need when you're configuring or re-checking
-/// the storage VM. Keeps the main scroll surface free of a permanent
-/// status row.
+/// Slide-down panel under the link icon. Shows live connection
+/// status + Refresh/Connect, the active service URL, and a shortcut
+/// to Settings (where URL + API key are configured). The fields
+/// themselves moved to Settings — this panel is purely operational
+/// state, not configuration.
 class _ConnectionPanel extends ConsumerWidget {
-  final TextEditingController urlController;
-  final TextEditingController apiKeyController;
   final bool isLoading;
   final bool hasUnits;
-  final VoidCallback onSave;
   final VoidCallback onConnect;
+  final VoidCallback onConfigure;
 
   const _ConnectionPanel({
-    required this.urlController,
-    required this.apiKeyController,
     required this.isLoading,
     required this.hasUnits,
-    required this.onSave,
     required this.onConnect,
+    required this.onConfigure,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final statusAsync = ref.watch(storageStatusProvider);
+    final url = ref.watch(storageServiceUrlProvider);
 
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -701,43 +688,31 @@ class _ConnectionPanel extends ConsumerWidget {
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          // URL + Save
+          const SizedBox(height: 6),
+          // Active URL display + Configure shortcut to Settings
           Row(
             children: [
               Expanded(
-                child: TextField(
-                  controller: urlController,
-                  decoration: InputDecoration(
-                    labelText: 'Service URL',
-                    hintText: 'http://192.168.1.100:3456',
-                    isDense: true,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  style: const TextStyle(fontSize: 14),
+                child: Text(
+                  url.isEmpty ? '(no URL configured)' : url,
+                  style: TextStyle(color: Colors.grey[500], fontSize: 11),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: onSave,
-                child: const Text('Save'),
+              TextButton.icon(
+                onPressed: onConfigure,
+                icon: const Icon(Icons.settings, size: 14),
+                label: const Text(
+                  'Configure',
+                  style: TextStyle(fontSize: 12),
+                ),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  visualDensity: VisualDensity.compact,
+                ),
               ),
             ],
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: apiKeyController,
-            decoration: InputDecoration(
-              labelText: 'API Key (optional for local)',
-              isDense: true,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-            style: const TextStyle(fontSize: 14),
-            obscureText: true,
           ),
         ],
       ),
