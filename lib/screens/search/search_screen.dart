@@ -7,7 +7,9 @@ import '../../providers/cs2_database_provider.dart';
 import '../../providers/search_compare_provider.dart';
 import '../../providers/search_history_provider.dart';
 import '../../providers/search_prices_provider.dart';
+import '../../services/case_pool.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/case_drop_status_badge.dart';
 
 /// Holds the current search query for the Search tab.
 final searchCatalogQueryProvider =
@@ -1025,9 +1027,38 @@ class _SearchResultCard extends ConsumerWidget {
                           overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 2),
-                        Text(
-                          [item.weaponType, item.rarity].join(' • '),
-                          style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                [item.weaponType, item.rarity].join(' • '),
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 12,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            // Drop-pool indicator on container rows so
+                            // active vs discontinued is visible without
+                            // opening the detail.
+                            Builder(builder: (_) {
+                              final status = classifyContainer(
+                                marketHashName: item.marketHashName,
+                                weaponType: item.weaponType,
+                              );
+                              if (status == CaseDropStatus.notApplicable) {
+                                return const SizedBox.shrink();
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.only(left: 6),
+                                child: CaseDropStatusBadge(
+                                  status: status,
+                                  compact: true,
+                                ),
+                              );
+                            }),
+                          ],
                         ),
                       ],
                     ),

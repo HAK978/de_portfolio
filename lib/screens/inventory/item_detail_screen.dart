@@ -7,8 +7,10 @@ import '../../providers/cs2_database_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
+import '../../services/case_pool.dart';
 import '../../services/cs2_database_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/case_drop_status_badge.dart';
 import '../../widgets/price_change_badge.dart';
 import '../../widgets/price_chart.dart';
 
@@ -164,7 +166,9 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -182,7 +186,6 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
               if (item.isStatTrak)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -199,6 +202,12 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
                     ),
                   ),
                 ),
+              CaseDropStatusBadge(
+                status: classifyContainer(
+                  marketHashName: item.marketHashName,
+                  weaponType: item.weaponType,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 24),
