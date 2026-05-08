@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/cs2_item.dart';
+import '../services/case_pool.dart';
 import '../theme/app_theme.dart';
 import 'price_change_badge.dart';
 
@@ -37,28 +38,64 @@ class ItemCard extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  // Item image
-                  SizedBox(
-                    width: 64,
-                    height: 48,
-                    child: Image.network(
-                      item.imageUrl,
-                      fit: BoxFit.contain,
-                      // Decode at ~4x display size for crisp images on
-                      // hi-DPI screens (S24 Ultra is ~3.5x DPR).
-                      cacheWidth: 256,
-                      cacheHeight: 192,
-                      errorBuilder: (_, _, _) => const Icon(
-                        Icons.broken_image,
-                        color: Colors.white24,
-                        size: 20,
+                  // Item image with drop-pool corner dot for containers
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      SizedBox(
+                        width: 64,
+                        height: 48,
+                        child: Image.network(
+                          item.imageUrl,
+                          fit: BoxFit.contain,
+                          // Decode at ~4x display size for crisp images on
+                          // hi-DPI screens (S24 Ultra is ~3.5x DPR).
+                          cacheWidth: 256,
+                          cacheHeight: 192,
+                          errorBuilder: (_, _, _) => const Icon(
+                            Icons.broken_image,
+                            color: Colors.white24,
+                            size: 20,
+                          ),
+                          // Show nothing while loading — avoids placeholder rebuilds
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return const SizedBox.shrink();
+                          },
+                        ),
                       ),
-                      // Show nothing while loading — avoids placeholder rebuilds
-                      loadingBuilder: (context, child, loadingProgress) {
-                        if (loadingProgress == null) return child;
-                        return const SizedBox.shrink();
-                      },
-                    ),
+                      // Drop-pool dot for cases — green = active drop,
+                      // gray = discontinued. Hidden for non-case items
+                      // (skins, capsules, packages, agents, etc).
+                      Builder(builder: (ctx) {
+                        final status = classifyContainer(
+                          marketHashName: item.marketHashName,
+                          weaponType: item.weaponType,
+                        );
+                        if (status == CaseDropStatus.notApplicable) {
+                          return const SizedBox.shrink();
+                        }
+                        final dotColor = status == CaseDropStatus.activeDrop
+                            ? Colors.greenAccent
+                            : Colors.grey;
+                        return Positioned(
+                          top: -2,
+                          right: -2,
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: dotColor,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Theme.of(ctx).colorScheme.surface,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
                   ),
                   const SizedBox(width: 12),
 
