@@ -635,7 +635,8 @@ class _CaseDropTile extends StatelessWidget {
                 : Image.network(
                     drop.imageUrl,
                     fit: BoxFit.contain,
-                    cacheHeight: 64,
+                    // ~4x display height for hi-DPI sharpness (~32px tall).
+                    cacheHeight: 128,
                     errorBuilder: (_, _, _) => const Icon(
                       Icons.broken_image,
                       color: Colors.white24,

@@ -100,9 +100,12 @@ class StorageService {
   /// Fetch the contents of a specific storage unit.
   /// Returns resolved items with names, images, rarity, etc.
   Future<List<CS2Item>> getCasketContents(String casketId) async {
+    // 75s — 15s buffer over the server's 60s casket-contents timeout
+    // so the server fires first with a clear "GC was slow" message
+    // instead of the client throwing a generic TimeoutException.
     final response = await http
         .get(Uri.parse('$baseUrl/storage/$casketId'), headers: _headers)
-        .timeout(const Duration(seconds: 60));
+        .timeout(const Duration(seconds: 75));
 
     if (response.statusCode != 200) {
       throw _errorFromResponse(response, 'Failed to fetch casket contents');

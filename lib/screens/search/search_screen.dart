@@ -9,7 +9,6 @@ import '../../providers/search_history_provider.dart';
 import '../../providers/search_prices_provider.dart';
 import '../../services/case_pool.dart';
 import '../../theme/app_theme.dart';
-import '../../widgets/case_drop_status_badge.dart';
 
 /// Holds the current search query for the Search tab.
 final searchCatalogQueryProvider =
@@ -995,22 +994,65 @@ class _SearchResultCard extends ConsumerWidget {
               padding: const EdgeInsets.all(12),
               child: Row(
                 children: [
-                  SizedBox(
-                    width: 64,
-                    height: 48,
-                    child: Image.network(
-                      item.imageUrl,
-                      fit: BoxFit.contain,
-                      cacheWidth: 128,
-                      cacheHeight: 96,
-                      errorBuilder: (_, _, _) => const Icon(
-                        Icons.broken_image,
-                        color: Colors.white24,
-                        size: 20,
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      SizedBox(
+                        width: 64,
+                        height: 48,
+                        child: Image.network(
+                          item.imageUrl,
+                          fit: BoxFit.contain,
+                          // Decode at ~4x the displayed size for crisp
+                          // images on hi-DPI screens (S24 Ultra is
+                          // ~3.5x DPR).
+                          cacheWidth: 256,
+                          cacheHeight: 192,
+                          errorBuilder: (_, _, _) => const Icon(
+                            Icons.broken_image,
+                            color: Colors.white24,
+                            size: 20,
+                          ),
+                          loadingBuilder: (context, child, progress) =>
+                              progress == null
+                                  ? child
+                                  : const SizedBox.shrink(),
+                        ),
                       ),
-                      loadingBuilder: (context, child, progress) =>
-                          progress == null ? child : const SizedBox.shrink(),
-                    ),
+                      // Drop-pool dot on the image corner — green for
+                      // active drop, gray for discontinued; no dot for
+                      // non-case containers (sticker capsules, etc.)
+                      Builder(builder: (ctx) {
+                        final status = classifyContainer(
+                          marketHashName: item.marketHashName,
+                          weaponType: item.weaponType,
+                        );
+                        if (status == CaseDropStatus.notApplicable) {
+                          return const SizedBox.shrink();
+                        }
+                        final dotColor = status == CaseDropStatus.activeDrop
+                            ? Colors.greenAccent
+                            : Colors.grey;
+                        return Positioned(
+                          top: -2,
+                          right: -2,
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            decoration: BoxDecoration(
+                              color: dotColor,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Theme.of(ctx)
+                                    .colorScheme
+                                    .surface,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -1027,38 +1069,13 @@ class _SearchResultCard extends ConsumerWidget {
                           overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 2),
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                [item.weaponType, item.rarity].join(' • '),
-                                style: TextStyle(
-                                  color: Colors.grey[400],
-                                  fontSize: 12,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            // Drop-pool indicator on container rows so
-                            // active vs discontinued is visible without
-                            // opening the detail.
-                            Builder(builder: (_) {
-                              final status = classifyContainer(
-                                marketHashName: item.marketHashName,
-                                weaponType: item.weaponType,
-                              );
-                              if (status == CaseDropStatus.notApplicable) {
-                                return const SizedBox.shrink();
-                              }
-                              return Padding(
-                                padding: const EdgeInsets.only(left: 6),
-                                child: CaseDropStatusBadge(
-                                  status: status,
-                                  compact: true,
-                                ),
-                              );
-                            }),
-                          ],
+                        Text(
+                          [item.weaponType, item.rarity].join(' • '),
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 12,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),

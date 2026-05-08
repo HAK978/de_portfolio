@@ -44,8 +44,10 @@ class ItemCard extends StatelessWidget {
                     child: Image.network(
                       item.imageUrl,
                       fit: BoxFit.contain,
-                      cacheWidth: 128,
-                      cacheHeight: 96,
+                      // Decode at ~4x display size for crisp images on
+                      // hi-DPI screens (S24 Ultra is ~3.5x DPR).
+                      cacheWidth: 256,
+                      cacheHeight: 192,
                       errorBuilder: (_, _, _) => const Icon(
                         Icons.broken_image,
                         color: Colors.white24,

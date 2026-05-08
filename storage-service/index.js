@@ -369,10 +369,12 @@ app.get('/storage/:casketId', async (req, res) => {
   console.log(`[API] Fetching contents of casket ${casketId}...`);
 
   try {
+    // 60s timeout — large caskets (~1k items) routinely take 30+ seconds
+    // for the GC to enumerate, especially on a cold connection.
     const rawItems = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Casket contents request timed out (30s)'));
-      }, 30000);
+        reject(new Error('Casket contents request timed out (60s) — try again, the GC was slow'));
+      }, 60000);
 
       csgo.getCasketContents(casketId, (err, items) => {
         clearTimeout(timeout);
