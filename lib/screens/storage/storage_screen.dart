@@ -193,6 +193,10 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   final _apiKeyController = TextEditingController();
   final _searchController = TextEditingController();
   bool _showUrlInput = false;
+  // Externalized expansion state. Keyed by unit id so multiple units
+  // can be open simultaneously. Used by the SliverPersistentHeader
+  // implementation so each header can pin while its content scrolls.
+  final Set<String> _expandedUnitIds = {};
 
   @override
   void initState() {
@@ -219,6 +223,142 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
         ref.read(_storagePriceRangeProvider) != null;
   }
 
+  void _toggleUnit(StorageUnit unit) {
+    setState(() {
+      if (_expandedUnitIds.contains(unit.id)) {
+        _expandedUnitIds.remove(unit.id);
+      } else {
+        _expandedUnitIds.add(unit.id);
+      }
+    });
+    // Trigger contents fetch on first expand (mirrors the previous
+    // ExpansionTile.onExpansionChanged behavior).
+    if (_expandedUnitIds.contains(unit.id)) {
+      ref.read(storageProvider.notifier).fetchContents(unit.id);
+    }
+  }
+
+  /// Builds the sliver for a single unit's expanded body — progress
+  /// bars, filtered-count + Fetch Prices row, and the items list. The
+  /// header (which stays pinned while these scroll) is the
+  /// SliverPersistentHeader sibling above this sliver in the
+  /// CustomScrollView.
+  Widget _buildUnitContentSliver({
+    required BuildContext context,
+    required StorageUnit unit,
+    required StorageState storage,
+    required bool anyFetching,
+    required String query,
+    required SortOption currentSort,
+    required Set<String> currentRarity,
+    required Set<String> currentWeaponType,
+    required Set<String> currentWear,
+    required Set<String> currentCollection,
+    required ({double min, double max})? currentPriceRange,
+  }) {
+    final isLoading = storage.loadingCaskets.contains(unit.id);
+    final isPricing =
+        storage.pricingCaskets.contains('${unit.id}_steam') ||
+            storage.pricingCaskets.contains('${unit.id}_csfloat');
+    final steamProgress = storage.pricingProgress['${unit.id}_steam'];
+    final csfloatProgress = storage.pricingProgress['${unit.id}_csfloat'];
+
+    final filteredItems = unit.items.isEmpty
+        ? <CS2Item>[]
+        : _applyFilters(
+            unit.items,
+            query: query,
+            sort: currentSort,
+            rarity: currentRarity,
+            weaponType: currentWeaponType,
+            wear: currentWear,
+            collection: currentCollection,
+            priceRange: currentPriceRange,
+          );
+
+    final totalFilteredQty =
+        filteredItems.fold(0, (int sum, item) => sum + item.quantity);
+
+    final widgets = <Widget>[];
+
+    if (isLoading && unit.items.isEmpty) {
+      widgets.add(const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(child: CircularProgressIndicator()),
+      ));
+    } else if (unit.items.isEmpty) {
+      widgets.add(Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          'Loading contents...',
+          style: TextStyle(color: Colors.grey[500], fontSize: 13),
+        ),
+      ));
+    } else {
+      if (steamProgress != null) widgets.add(_ProgressBar(progress: steamProgress));
+      if (csfloatProgress != null) widgets.add(_ProgressBar(progress: csfloatProgress));
+
+      widgets.add(Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        child: Row(
+          children: [
+            Text(
+              filteredItems.length == unit.items.length
+                  ? '${unit.items.length} unique · ${unit.itemCount} total'
+                  : '${filteredItems.length} unique · $totalFilteredQty total',
+              style: TextStyle(color: Colors.grey[500], fontSize: 12),
+            ),
+            const Spacer(),
+            if (!isPricing)
+              TextButton.icon(
+                onPressed: anyFetching
+                    ? null
+                    : () => ref
+                        .read(storageProvider.notifier)
+                        .fetchAllPrices(unit.id),
+                icon: Icon(
+                  unit.totalValue > 0 ? Icons.refresh : Icons.download,
+                  size: 16,
+                ),
+                label: Text(
+                  unit.totalValue > 0 ? 'Refresh Prices' : 'Fetch Prices',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+      ));
+
+      if (filteredItems.isEmpty) {
+        widgets.add(Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'No items match filters',
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+        ));
+      } else {
+        for (final item in filteredItems) {
+          widgets.add(Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: ItemCard(
+              item: item,
+              onTap: () => context.go('/storage/item', extra: item),
+            ),
+          ));
+        }
+        widgets.add(const SizedBox(height: 8));
+      }
+    }
+
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, i) => widgets[i],
+        childCount: widgets.length,
+      ),
+    );
+  }
+
   void _showFilterSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -233,7 +373,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   @override
   Widget build(BuildContext context) {
     final storage = ref.watch(storageProvider);
-    final serviceUrl = ref.watch(storageServiceUrlProvider);
     final anyFetching = ref.watch(anyPriceFetchInProgressProvider); // disables storage fetch if Steam or CSFloat is busy
     final currentSort = ref.watch(_storageSortProvider);
     final currentRarity = ref.watch(_storageRarityProvider);
@@ -286,68 +425,77 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
               }).toList();
             },
           ),
-          IconButton(
-            icon: const Icon(Icons.link),
-            tooltip: 'Service URL',
-            onPressed: () {
-              setState(() => _showUrlInput = !_showUrlInput);
-            },
-          ),
+          // Connection icon doubles as the entry point for the
+          // service URL / API key panel AND as a live status indicator
+          // (colored dot in the corner). Replaces the always-on
+          // ConnectionBar row that used to sit below.
+          Consumer(builder: (context, ref, _) {
+            final statusAsync = ref.watch(storageStatusProvider);
+            final dotColor = statusAsync.when(
+              data: (s) => s.isReady
+                  ? Colors.greenAccent
+                  : s.unauthorized
+                      ? Colors.amberAccent
+                      : s.reachable
+                          ? Colors.orangeAccent
+                          : Colors.redAccent,
+              loading: () => Colors.grey,
+              error: (_, _) => Colors.redAccent,
+            );
+            return IconButton(
+              tooltip: 'Connection',
+              icon: SizedBox(
+                width: 24,
+                height: 24,
+                child: Stack(
+                  children: [
+                    const Icon(Icons.link, size: 22),
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: Container(
+                        width: 9,
+                        height: 9,
+                        decoration: BoxDecoration(
+                          color: dotColor,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.surface,
+                            width: 1.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              onPressed: () =>
+                  setState(() => _showUrlInput = !_showUrlInput),
+            );
+          }),
         ],
       ),
       body: Column(
         children: [
           if (_showUrlInput)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _urlController,
-                          decoration: InputDecoration(
-                            labelText: 'Service URL',
-                            hintText: 'http://192.168.1.100:3456',
-                            isDense: true,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: () {
-                          ref.read(storageServiceUrlProvider.notifier).set(
-                                _urlController.text.trim(),
-                              );
-                          ref.read(storageApiKeyProvider.notifier).set(
-                                _apiKeyController.text.trim(),
-                              );
-                          setState(() => _showUrlInput = false);
-                        },
-                        child: const Text('Save'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _apiKeyController,
-                    decoration: InputDecoration(
-                      labelText: 'API Key (optional for local)',
-                      isDense: true,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    style: const TextStyle(fontSize: 14),
-                    obscureText: true,
-                  ),
-                ],
-              ),
+            _ConnectionPanel(
+              urlController: _urlController,
+              apiKeyController: _apiKeyController,
+              isLoading: storage.isLoading,
+              hasUnits: storage.units.isNotEmpty,
+              onSave: () {
+                ref.read(storageServiceUrlProvider.notifier).set(
+                      _urlController.text.trim(),
+                    );
+                ref.read(storageApiKeyProvider.notifier).set(
+                      _apiKeyController.text.trim(),
+                    );
+                setState(() => _showUrlInput = false);
+              },
+              onConnect: () {
+                ref.invalidate(storageStatusProvider);
+                ref.read(storageProvider.notifier).fetchCaskets();
+              },
             ),
 
           // Search bar
@@ -381,16 +529,6 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
               ),
             ),
 
-          _ConnectionBar(
-            serviceUrl: serviceUrl,
-            isLoading: storage.isLoading,
-            hasUnits: storage.units.isNotEmpty,
-            onConnect: () {
-              ref.invalidate(storageStatusProvider);
-              ref.read(storageProvider.notifier).fetchCaskets();
-            },
-          ),
-
           if (storage.error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -409,55 +547,39 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
                       style: TextStyle(color: Colors.grey),
                     ),
                   )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: storage.units.length,
-                    itemBuilder: (context, index) {
-                      final unit = storage.units[index];
-                      final isLoading =
-                          storage.loadingCaskets.contains(unit.id);
-                      final isPricing =
-                          storage.pricingCaskets.contains('${unit.id}_steam') ||
-                          storage.pricingCaskets.contains('${unit.id}_csfloat');
-                      final steamProgress =
-                          storage.pricingProgress['${unit.id}_steam'];
-                      final csfloatProgress =
-                          storage.pricingProgress['${unit.id}_csfloat'];
-
-                      // Apply filters to this unit's items
-                      final filteredItems = unit.items.isEmpty
-                          ? <CS2Item>[]
-                          : _applyFilters(
-                              unit.items,
-                              query: query,
-                              sort: currentSort,
-                              rarity: currentRarity,
-                              weaponType: currentWeaponType,
-                              wear: currentWear,
-                              collection: currentCollection,
-                              priceRange: currentPriceRange,
-                            );
-
-                      return _StorageUnitCard(
-                        unit: unit,
-                        filteredItems: filteredItems,
-                        isLoading: isLoading,
-                        isPricing: isPricing,
-                        disabled: anyFetching,
-                        steamProgress: steamProgress,
-                        csfloatProgress: csfloatProgress,
-                        onExpand: () {
-                          ref
-                              .read(storageProvider.notifier)
-                              .fetchContents(unit.id);
-                        },
-                        onFetchPrices: () {
-                          ref
-                              .read(storageProvider.notifier)
-                              .fetchAllPrices(unit.id);
-                        },
-                      );
-                    },
+                : CustomScrollView(
+                    slivers: [
+                      const SliverPadding(
+                        padding: EdgeInsets.only(top: 12),
+                      ),
+                      for (final unit in storage.units) ...[
+                        SliverPersistentHeader(
+                          pinned: true,
+                          delegate: _UnitHeaderDelegate(
+                            unit: unit,
+                            expanded: _expandedUnitIds.contains(unit.id),
+                            onTap: () => _toggleUnit(unit),
+                          ),
+                        ),
+                        if (_expandedUnitIds.contains(unit.id))
+                          _buildUnitContentSliver(
+                            context: context,
+                            unit: unit,
+                            storage: storage,
+                            anyFetching: anyFetching,
+                            query: query,
+                            currentSort: currentSort,
+                            currentRarity: currentRarity,
+                            currentWeaponType: currentWeaponType,
+                            currentWear: currentWear,
+                            currentCollection: currentCollection,
+                            currentPriceRange: currentPriceRange,
+                          ),
+                      ],
+                      const SliverPadding(
+                        padding: EdgeInsets.only(bottom: 24),
+                      ),
+                    ],
                   ),
           ),
         ],
@@ -466,16 +588,26 @@ class _StorageScreenState extends ConsumerState<StorageScreen> {
   }
 }
 
-class _ConnectionBar extends ConsumerWidget {
-  final String serviceUrl;
+/// Slide-down panel that opens when the user taps the link icon in
+/// the app bar. Combines the connection status, the Refresh/Connect
+/// action, and the service URL + API key inputs in one place — all
+/// the pieces you only need when you're configuring or re-checking
+/// the storage VM. Keeps the main scroll surface free of a permanent
+/// status row.
+class _ConnectionPanel extends ConsumerWidget {
+  final TextEditingController urlController;
+  final TextEditingController apiKeyController;
   final bool isLoading;
   final bool hasUnits;
+  final VoidCallback onSave;
   final VoidCallback onConnect;
 
-  const _ConnectionBar({
-    required this.serviceUrl,
+  const _ConnectionPanel({
+    required this.urlController,
+    required this.apiKeyController,
     required this.isLoading,
     required this.hasUnits,
+    required this.onSave,
     required this.onConnect,
   });
 
@@ -483,71 +615,129 @@ class _ConnectionBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final statusAsync = ref.watch(storageStatusProvider);
 
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
         children: [
-          statusAsync.when(
-            data: (status) => Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  status.isReady ? Icons.circle : Icons.circle_outlined,
-                  size: 12,
-                  color: status.isReady
-                      ? Colors.green
-                      : status.unauthorized
-                          ? Colors.amber
-                          : status.reachable
-                              ? Colors.orange
-                              : Colors.red,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  status.isReady
-                      ? 'GC Connected'
-                      : status.unauthorized
-                          ? 'Wrong API key — check Settings'
-                          : status.reachable
-                              ? 'Service up, GC disconnected'
-                              : 'Service unreachable',
-                  style: TextStyle(
-                    color: Colors.grey[400],
-                    fontSize: 13,
+          // Status + Refresh/Connect
+          Row(
+            children: [
+              Expanded(
+                child: statusAsync.when(
+                  data: (status) => Row(
+                    children: [
+                      Icon(
+                        status.isReady ? Icons.circle : Icons.circle_outlined,
+                        size: 12,
+                        color: status.isReady
+                            ? Colors.greenAccent
+                            : status.unauthorized
+                                ? Colors.amberAccent
+                                : status.reachable
+                                    ? Colors.orangeAccent
+                                    : Colors.redAccent,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          status.isReady
+                              ? 'GC Connected'
+                              : status.unauthorized
+                                  ? 'Wrong API key — check Settings'
+                                  : status.reachable
+                                      ? 'Service up, GC disconnected'
+                                      : 'Service unreachable',
+                          style: TextStyle(
+                            color: Colors.grey[300],
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  loading: () => const Row(
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 8),
+                      Text('Checking...', style: TextStyle(fontSize: 13)),
+                    ],
+                  ),
+                  error: (_, _) => const Row(
+                    children: [
+                      Icon(Icons.error_outline,
+                          size: 14, color: Colors.redAccent),
+                      SizedBox(width: 8),
+                      Text('Status check failed',
+                          style: TextStyle(color: Colors.redAccent, fontSize: 13)),
+                    ],
                   ),
                 ),
-              ],
-            ),
-            loading: () => const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-            error: (_, _) => const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.circle, size: 12, color: Colors.red),
-                SizedBox(width: 8),
-                Text('Error', style: TextStyle(color: Colors.red, fontSize: 13)),
-              ],
-            ),
+              ),
+              FilledButton.icon(
+                onPressed: isLoading ? null : onConnect,
+                icon: isLoading
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Icon(
+                        hasUnits ? Icons.refresh : Icons.power_settings_new,
+                        size: 18,
+                      ),
+                label: Text(hasUnits ? 'Refresh' : 'Connect'),
+              ),
+            ],
           ),
-
-          const Spacer(),
-
-          FilledButton.icon(
-            onPressed: isLoading ? null : onConnect,
-            icon: isLoading
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
+          const SizedBox(height: 10),
+          // URL + Save
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: urlController,
+                  decoration: InputDecoration(
+                    labelText: 'Service URL',
+                    hintText: 'http://192.168.1.100:3456',
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                  )
-                : Icon(hasUnits ? Icons.refresh : Icons.power_settings_new),
-            label: Text(hasUnits ? 'Refresh' : 'Connect'),
+                  ),
+                  style: const TextStyle(fontSize: 14),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: onSave,
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: apiKeyController,
+            decoration: InputDecoration(
+              labelText: 'API Key (optional for local)',
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            style: const TextStyle(fontSize: 14),
+            obscureText: true,
           ),
         ],
       ),
@@ -555,170 +745,132 @@ class _ConnectionBar extends ConsumerWidget {
   }
 }
 
-class _StorageUnitCard extends StatelessWidget {
-  final StorageUnit unit;
-  final List<CS2Item> filteredItems;
-  final bool isLoading;
-  final bool isPricing;
-  final bool disabled;
-  final PricingProgress? steamProgress;
-  final PricingProgress? csfloatProgress;
-  final VoidCallback onExpand;
-  final VoidCallback onFetchPrices;
 
-  const _StorageUnitCard({
+/// Sticky-pinning header for one storage unit. The header rides the
+/// top of the viewport while you scroll through that unit's expanded
+/// items, so collapse-the-current-unit is one tap away no matter how
+/// far you've scrolled. Tapping toggles expansion via [onTap].
+class _UnitHeaderDelegate extends SliverPersistentHeaderDelegate {
+  final StorageUnit unit;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  const _UnitHeaderDelegate({
     required this.unit,
-    required this.filteredItems,
-    required this.isLoading,
-    required this.isPricing,
-    required this.disabled,
-    this.steamProgress,
-    this.csfloatProgress,
-    required this.onExpand,
-    required this.onFetchPrices,
+    required this.expanded,
+    required this.onTap,
   });
 
+  static const double _height = 76.0;
+
   @override
-  Widget build(BuildContext context) {
+  double get maxExtent => _height;
+  @override
+  double get minExtent => _height;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
     final currencyFormat = NumberFormat.currency(symbol: '\$');
-    final totalFilteredQty = filteredItems.fold(0, (int sum, item) => sum + item.quantity);
+    final hasValues = unit.totalValue > 0 || unit.totalCsfloatValue > 0;
 
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ExpansionTile(
-        leading: const Icon(Icons.storage, color: CS2Colors.milSpec),
-        title: Text(
-          unit.name,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${unit.itemCount} items',
-              style: TextStyle(color: Colors.grey[400], fontSize: 12),
-            ),
-            if (unit.totalValue > 0 || unit.totalCsfloatValue > 0)
-              const SizedBox(height: 2),
-            if (unit.totalValue > 0 || unit.totalCsfloatValue > 0)
-              Row(
-                children: [
-                  if (unit.totalValue > 0) ...[
-                    Text(
-                      'Steam ',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 11),
-                    ),
-                    Text(
-                      currencyFormat.format(unit.totalValue),
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                  if (unit.totalValue > 0 && unit.totalCsfloatValue > 0)
-                    Text('  ·  ',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 11)),
-                  if (unit.totalCsfloatValue > 0) ...[
-                    Text(
-                      'CSFloat ',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 11),
-                    ),
-                    Text(
-                      currencyFormat.format(unit.totalCsfloatValue),
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-          ],
-        ),
-        onExpansionChanged: (expanded) {
-          if (expanded) onExpand();
-        },
-        children: [
-          if (isLoading && unit.items.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: CircularProgressIndicator()),
-            )
-          else if (unit.items.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'Expand to load contents',
-                style: TextStyle(color: Colors.grey[500], fontSize: 13),
-              ),
-            )
-          else ...[
-            // Pricing progress bars
-            if (steamProgress != null)
-              _ProgressBar(progress: steamProgress!),
-            if (csfloatProgress != null)
-              _ProgressBar(progress: csfloatProgress!),
-
-            // Fetch prices button + item count
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-              child: Row(
-                children: [
-                  Text(
-                    filteredItems.length == unit.items.length
-                        ? '${unit.items.length} unique \u00b7 ${unit.itemCount} total'
-                        : '${filteredItems.length} unique \u00b7 $totalFilteredQty total',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
-                  ),
-                  const Spacer(),
-                  if (!isPricing)
-                    TextButton.icon(
-                      onPressed: disabled ? null : onFetchPrices,
-                      icon: Icon(
-                        unit.totalValue > 0 ? Icons.refresh : Icons.download,
-                        size: 16,
-                      ),
-                      label: Text(
-                        unit.totalValue > 0 ? 'Refresh Prices' : 'Fetch Prices',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                ],
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(
+              bottom: BorderSide(
+                color: overlapsContent ? Colors.white12 : Colors.transparent,
+                width: 1,
               ),
             ),
-
-            // Items list
-            if (filteredItems.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  'No items match filters',
-                  style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.storage, color: CS2Colors.milSpec),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      unit.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Text(
+                          '${unit.itemCount} items',
+                          style: TextStyle(
+                              color: Colors.grey[400], fontSize: 12),
+                        ),
+                        if (hasValues) ...[
+                          if (unit.totalValue > 0) ...[
+                            Text('  ·  ',
+                                style: TextStyle(
+                                    color: Colors.grey[600], fontSize: 11)),
+                            Text(
+                              'Steam ${currencyFormat.format(unit.totalValue)}',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                          if (unit.totalCsfloatValue > 0) ...[
+                            Text('  ·  ',
+                                style: TextStyle(
+                                    color: Colors.grey[600], fontSize: 11)),
+                            Text(
+                              'CSF ${currencyFormat.format(unit.totalCsfloatValue)}',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ],
+                    ),
+                  ],
                 ),
-              )
-            else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                itemCount: filteredItems.length,
-                itemBuilder: (context, index) {
-                  final item = filteredItems[index];
-                  return ItemCard(
-                    item: item,
-                    onTap: () => context.go('/storage/item', extra: item),
-                  );
-                },
               ),
-            const SizedBox(height: 8),
-          ],
-        ],
+              AnimatedRotation(
+                turns: expanded ? 0.5 : 0,
+                duration: const Duration(milliseconds: 200),
+                child: const Icon(Icons.expand_more, color: Colors.white54),
+              ),
+            ],
+          ),
+        ),
       ),
     );
+  }
+
+  @override
+  bool shouldRebuild(covariant _UnitHeaderDelegate oldDelegate) {
+    return oldDelegate.expanded != expanded ||
+        oldDelegate.unit.id != unit.id ||
+        oldDelegate.unit.itemCount != unit.itemCount ||
+        oldDelegate.unit.totalValue != unit.totalValue ||
+        oldDelegate.unit.totalCsfloatValue != unit.totalCsfloatValue ||
+        oldDelegate.unit.name != unit.name;
   }
 }
 
