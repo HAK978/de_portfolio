@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
@@ -248,8 +249,18 @@ final csfloatApiKeyProvider = NotifierProvider<CsfloatApiKeyNotifier, String>(
   CsfloatApiKeyNotifier.new,
 );
 
+/// Stores the CSFloat API key in encrypted storage (Android Keystore /
+/// iOS Keychain) instead of a plaintext file in the app's documents
+/// directory. On a rooted device the old plaintext file was readable;
+/// the keystore-backed entry is not.
+///
+/// Includes a one-time migration: if a `csfloat_api_key.txt` file
+/// exists from an older install, it's copied to secure storage and
+/// the file is deleted on the next read.
 class CsfloatApiKeyNotifier extends Notifier<String> {
   static const _fileName = 'csfloat_api_key.txt';
+  static const _secureStorageKey = 'csfloat_api_key';
+  static const _storage = FlutterSecureStorage();
 
   @override
   String build() {
@@ -265,13 +276,31 @@ class CsfloatApiKeyNotifier extends Notifier<String> {
 
   Future<void> _loadSavedKey() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      if (file.existsSync()) {
-        final key = await file.readAsString();
-        if (key.trim().isNotEmpty && state.isEmpty) {
-          state = key.trim();
+      // Prefer the secure storage entry. Falls through to the legacy
+      // file path if the secure entry doesn't exist yet (one-time
+      // migration window after upgrading from a pre-secure build).
+      var key = await _storage.read(key: _secureStorageKey);
+
+      if (key == null || key.isEmpty) {
+        final dir = await getApplicationDocumentsDirectory();
+        final legacyFile = File('${dir.path}/$_fileName');
+        if (legacyFile.existsSync()) {
+          final legacyKey = (await legacyFile.readAsString()).trim();
+          if (legacyKey.isNotEmpty) {
+            await _storage.write(
+                key: _secureStorageKey, value: legacyKey);
+            key = legacyKey;
+            debugPrint('Migrated CSFloat key from plaintext file → secure storage');
+          }
+          // Delete the legacy file regardless — empty file or migrated.
+          try {
+            await legacyFile.delete();
+          } catch (_) {}
         }
+      }
+
+      if (key != null && key.isNotEmpty && state.isEmpty) {
+        state = key;
       }
     } catch (e) {
       debugPrint('Error loading CSFloat API key: $e');
@@ -280,9 +309,11 @@ class CsfloatApiKeyNotifier extends Notifier<String> {
 
   Future<void> _saveKey(String key) async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      await file.writeAsString(key);
+      if (key.isEmpty) {
+        await _storage.delete(key: _secureStorageKey);
+      } else {
+        await _storage.write(key: _secureStorageKey, value: key);
+      }
     } catch (e) {
       debugPrint('Error saving CSFloat API key: $e');
     }
