@@ -56,6 +56,7 @@ what_i_studied.txt
 polish_backlog.md
 audit_findings.md
 audit_proposed_fixes.md
+appcheck_debug_token.txt
 .claude/
 functions/node_modules/
 functions/lib/
