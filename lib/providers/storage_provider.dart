@@ -23,7 +23,7 @@ class StorageServiceUrlNotifier extends Notifier<String> {
   @override
   String build() {
     _loadSaved();
-    return 'http://34.44.97.110:3456';
+    return 'https://harshcs2.duckdns.org';
   }
 
   void set(String url) {

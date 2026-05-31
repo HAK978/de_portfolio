@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  flutter-analyze:
+    name: Flutter analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+
+  functions-typecheck:
+    name: Cloud Functions typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  storage-syntax:
+    name: storage-service syntax check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: storage-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: storage-service/package-lock.json
+      - run: node --check index.js
+      - run: node --check itemResolver.js

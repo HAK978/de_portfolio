@@ -349,7 +349,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     controller: _storageUrlController,
                     decoration: InputDecoration(
                       labelText: 'Service URL',
-                      hintText: 'http://192.168.1.100:3456',
+                      hintText: 'https://your-domain.duckdns.org',
                       filled: true,
                       fillColor: Theme.of(context).scaffoldBackgroundColor,
                       border: OutlineInputBorder(
