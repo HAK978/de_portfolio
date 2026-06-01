@@ -62,7 +62,7 @@ class PriceFetchState {
 /// Keeps track of how many fetches are active so we only release
 /// wakelock when all are done.
 /// Items that can't be sold on the market — skip these during price fetch.
-bool _isMarketable(CS2Item item) {
+bool isMarketable(CS2Item item) {
   // Extraordinary/Collectible items (service medals, pins, etc.)
   if (item.rarity == 'Extraordinary') return false;
 
@@ -76,9 +76,9 @@ bool _isMarketable(CS2Item item) {
 }
 
 /// Extracts unique marketable item names from inventory.
-List<String> _getMarketableNames(List<CS2Item> items) {
+List<String> getMarketableNames(List<CS2Item> items) {
   return items
-      .where(_isMarketable)
+      .where(isMarketable)
       .map((item) => item.marketHashName)
       .toSet()
       .toList();
@@ -115,7 +115,7 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
     }
 
     // Get unique marketable item names (skip non-tradeable items)
-    final uniqueNames = _getMarketableNames(items);
+    final uniqueNames = getMarketableNames(items);
     debugPrint('Starting price fetch for ${uniqueNames.length} marketable items');
 
     state = PriceFetchState(
@@ -371,7 +371,7 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
       }
     }
 
-    final uniqueNames = _getMarketableNames(items);
+    final uniqueNames = getMarketableNames(items);
 
     state = PriceFetchState(
       isFetching: true,
