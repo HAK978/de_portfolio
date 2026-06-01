@@ -1,0 +1,57 @@
+name: Deploy storage-service
+
+# Pulls the latest storage-service code onto the GCE VM, installs prod
+# deps, and restarts the systemd unit. Triggers automatically when
+# storage-service/ changes land on main, or manually via the "Run
+# workflow" button.
+#
+# Required GitHub Secrets:
+#   VM_SSH_PRIVATE_KEY  — the OpenSSH private key that authenticates
+#                         the `harsh` user on cs2-storage.duckdns.org
+#                         (gcloud-managed key, ~/.ssh/google_compute_engine)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'storage-service/**'
+      - '.github/workflows/deploy-storage.yml'
+  workflow_dispatch:
+
+# Only one deploy at a time; cancel an in-flight run if a newer push lands.
+concurrency:
+  group: deploy-storage-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH + git pull + restart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to cs2-storage VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: harshcs2.duckdns.org
+          username: harsh
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            REPO=/home/harshavinashkute/de_portfolio
+            SERVICE_USER=harshavinashkute
+
+            echo "::group::Pull latest from main"
+            sudo -u "$SERVICE_USER" git -C "$REPO" fetch --quiet origin main
+            sudo -u "$SERVICE_USER" git -C "$REPO" reset --hard origin/main
+            sudo -u "$SERVICE_USER" git -C "$REPO" rev-parse --short HEAD
+            echo "::endgroup::"
+
+            echo "::group::Install prod dependencies"
+            sudo -u "$SERVICE_USER" bash -lc "cd $REPO/storage-service && npm ci --omit=dev"
+            echo "::endgroup::"
+
+            echo "::group::Restart cs2-storage service"
+            sudo systemctl restart cs2-storage
+            sleep 3
+            sudo systemctl is-active cs2-storage
+            echo "::endgroup::"
