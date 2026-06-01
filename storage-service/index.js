@@ -6,10 +6,39 @@ const ItemResolver = require('./itemResolver');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const metrics = require('./metrics');
 
 const app = express();
 const itemResolver = new ItemResolver();
 app.use(express.json());
+
+// ── Metrics middleware ────────────────────────────────────
+// Registered BEFORE the API-key middleware so /metrics is reachable
+// without an API key (Prometheus scrapers typically don't carry one).
+// Tracks request volume + latency, labelled by the matched route
+// pattern so high-cardinality casket IDs don't blow up the histogram.
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint();
+  res.on('finish', () => {
+    const route = req.route?.path || 'unmatched';
+    const duration = Number(process.hrtime.bigint() - start) / 1e9;
+    metrics.httpRequestsTotal.inc({
+      route,
+      method: req.method,
+      status: String(res.statusCode),
+    });
+    metrics.httpRequestDurationSeconds.observe(
+      { route, method: req.method },
+      duration,
+    );
+  });
+  next();
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', metrics.register.contentType);
+  res.send(await metrics.register.metrics());
+});
 
 // ── Config (env vars for remote, defaults for local dev) ─
 const PORT = process.env.PORT || 3456;
@@ -51,6 +80,7 @@ let gcIdleTimer = null;
 user.on('loggedOn', () => {
   console.log('[Steam] Logged in successfully');
   isLoggedIn = true;
+  metrics.steamLoggedIn.set(1);
   // Intentionally do NOT call gamesPlayed([730]) here. GC is brought
   // up on demand by ensureGCConnected() when an API request needs it.
 });
@@ -110,6 +140,8 @@ user.on('disconnected', (eresult, msg) => {
   console.log(`[Steam] Disconnected: ${msg} (${eresult})`);
   isLoggedIn = false;
   isGCConnected = false;
+  metrics.steamLoggedIn.set(0);
+  metrics.gcConnected.set(0);
   // autoRelogin (default: true) handles reconnect automatically.
   // The watchdog below catches cases where autoRelogin gets stuck.
 });
@@ -117,11 +149,15 @@ user.on('disconnected', (eresult, msg) => {
 csgo.on('connectedToGC', () => {
   console.log('[GC] Connected to CS2 Game Coordinator');
   isGCConnected = true;
+  metrics.gcConnected.set(1);
+  metrics.gcConnectionsTotal.inc();
 });
 
 csgo.on('disconnectedFromGC', (reason) => {
   console.log(`[GC] Disconnected: ${reason}`);
   isGCConnected = false;
+  metrics.gcConnected.set(0);
+  metrics.gcDisconnectionsTotal.inc({ reason: String(reason ?? 'unknown') });
   // Do NOT auto-reconnect. GC is on-demand now — next API request
   // calls ensureGCConnected() which sets gamesPlayed([730]) again.
 });
@@ -368,6 +404,7 @@ app.get('/storage/:casketId', async (req, res) => {
 
   console.log(`[API] Fetching contents of casket ${casketId}...`);
 
+  const fetchStart = Date.now();
   try {
     // 60s timeout — large caskets (~1k items) routinely take 30+ seconds
     // for the GC to enumerate, especially on a cold connection.
@@ -393,11 +430,16 @@ app.get('/storage/:casketId', async (req, res) => {
     const items = itemResolver.convertStorageItems(rawItems);
 
     console.log(`[API] Casket ${casketId}: ${rawItems.length} raw → ${items.length} resolved`);
+    metrics.casketFetchesTotal.inc({ result: 'success' });
     res.json({ casketId, itemCount: items.length, items });
   } catch (err) {
+    metrics.casketFetchesTotal.inc({ result: 'error' });
     console.error(`[API] Error fetching casket ${casketId}:`, err.message);
     res.status(500).json({ error: err.message });
   } finally {
+    metrics.casketFetchDurationSeconds.observe(
+      (Date.now() - fetchStart) / 1000,
+    );
     _inflightCaskets.delete(casketId);
   }
 });
