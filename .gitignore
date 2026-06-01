@@ -66,3 +66,13 @@ storage-service/.refresh_token
 .flutter-plugins
 .flutter-plugins-dependencies
 .dart_tool/
+
+# Terraform — state and lock files contain secrets and are environment-specific
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform/.terraform.tfstate.lock.info
+terraform/crash.log
