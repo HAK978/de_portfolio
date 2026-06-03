@@ -321,6 +321,30 @@ class FirestoreService {
     return prices;
   }
 
+  /// Loads 24h price-change percentages from the shared prices
+  /// collection, keyed by marketHashName.
+  ///
+  /// The `priceChange24h` field is maintained server-side by the
+  /// `updatePriceChanges` scheduled Cloud Function — the app only
+  /// reads it. Docs without the field yet (never processed by a
+  /// scheduled run) are omitted.
+  Future<Map<String, double>> loadPriceChanges() async {
+    final snapshot = await _db.collection('prices').get();
+    final changes = <String, double>{};
+
+    for (final doc in snapshot.docs) {
+      final data = doc.data();
+      final name = data['marketHashName'] as String?;
+      final change = (data['priceChange24h'] as num?)?.toDouble();
+      if (name != null && change != null) {
+        changes[name] = change;
+      }
+    }
+
+    debugPrint('Loaded ${changes.length} price changes from Firestore');
+    return changes;
+  }
+
   // ── Retry Logic ─────────────────────────────────────────
 
   /// Commits a Firestore batch with one retry on timeout.

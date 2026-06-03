@@ -280,6 +280,46 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     }
   }
 
+  /// Pulls server-computed 24h price changes from Firestore and merges
+  /// them into the loaded items so the price-change badge reflects real
+  /// movement. The `priceChange24h` values are maintained daily by the
+  /// `updatePriceChanges` Cloud Function; the app only reads them.
+  ///
+  /// Fire-and-forget: called on app open. No-ops if the inventory isn't
+  /// loaded yet or the user isn't authenticated.
+  Future<void> applyPriceChanges() async {
+    final items = state.when(
+      data: (items) => items,
+      loading: () => null,
+      error: (_, _) => null,
+    );
+    if (items == null || items.isEmpty) return;
+
+    final firestore = ref.read(firestoreServiceProvider);
+    if (!firestore.isAuthenticated) return;
+
+    try {
+      final changes = await firestore.loadPriceChanges();
+      if (changes.isEmpty) return;
+
+      var anyApplied = false;
+      final updatedItems = items.map((item) {
+        final change = changes[item.marketHashName];
+        if (change != null && change != item.priceChange24h) {
+          anyApplied = true;
+          return item.copyWith(priceChange24h: change);
+        }
+        return item;
+      }).toList();
+
+      if (!anyApplied) return;
+      state = AsyncValue.data(updatedItems);
+      _updateCache(updatedItems);
+    } catch (e) {
+      debugPrint('applyPriceChanges failed: $e');
+    }
+  }
+
   /// Saves current inventory state to cache (preserves prices).
   Future<void> _updateCache(List<CS2Item> items) async {
     final steamId = ref.read(steamIdProvider);
