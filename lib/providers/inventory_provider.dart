@@ -280,14 +280,16 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     }
   }
 
-  /// Pulls server-computed 24h price changes from Firestore and merges
-  /// them into the loaded items so the price-change badge reflects real
-  /// movement. The `priceChange24h` values are maintained daily by the
-  /// `updatePriceChanges` Cloud Function; the app only reads them.
+  /// Pulls server-maintained prices (currentPrice, csfloatPrice,
+  /// priceChange24h) from Firestore and merges them into the loaded
+  /// items, so the app shows the daily server-refreshed values without
+  /// requiring a manual fetch. The manual fetch flow still works and
+  /// overrides these afterward.
   ///
   /// Fire-and-forget: called on app open. No-ops if the inventory isn't
-  /// loaded yet or the user isn't authenticated.
-  Future<void> applyPriceChanges() async {
+  /// loaded yet or the user isn't authenticated. Only non-null server
+  /// values overwrite existing ones.
+  Future<void> applyServerPrices() async {
     final items = state.when(
       data: (items) => items,
       loading: () => null,
@@ -299,15 +301,27 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     if (!firestore.isAuthenticated) return;
 
     try {
-      final changes = await firestore.loadPriceChanges();
-      if (changes.isEmpty) return;
+      final serverPrices = await firestore.loadServerPrices();
+      if (serverPrices.isEmpty) return;
 
       var anyApplied = false;
       final updatedItems = items.map((item) {
-        final change = changes[item.marketHashName];
-        if (change != null && change != item.priceChange24h) {
+        final sp = serverPrices[item.marketHashName];
+        if (sp == null) return item;
+
+        final newCurrent = sp.currentPrice ?? item.currentPrice;
+        final newCsfloat = sp.csfloatPrice ?? item.csfloatPrice;
+        final newChange = sp.priceChange24h ?? item.priceChange24h;
+
+        if (newCurrent != item.currentPrice ||
+            newCsfloat != item.csfloatPrice ||
+            newChange != item.priceChange24h) {
           anyApplied = true;
-          return item.copyWith(priceChange24h: change);
+          return item.copyWith(
+            currentPrice: newCurrent,
+            csfloatPrice: newCsfloat,
+            priceChange24h: newChange,
+          );
         }
         return item;
       }).toList();
@@ -316,7 +330,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       state = AsyncValue.data(updatedItems);
       _updateCache(updatedItems);
     } catch (e) {
-      debugPrint('applyPriceChanges failed: $e');
+      debugPrint('applyServerPrices failed: $e');
     }
   }
 

@@ -30,9 +30,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Auto-refresh prices on app open if last fetch was >24h ago
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(priceFetchProvider.notifier).autoRefreshIfStale();
-      // Pull server-computed 24h price changes into the loaded items so
-      // the price-change badge reflects real movement.
-      ref.read(inventoryProvider.notifier).applyPriceChanges();
+      // Pull server-refreshed prices (current, CSFloat, 24h change) into
+      // the loaded items so the app shows up-to-date values on open
+      // without requiring a manual fetch.
+      ref.read(inventoryProvider.notifier).applyServerPrices();
     });
   }
 

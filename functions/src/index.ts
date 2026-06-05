@@ -1,8 +1,89 @@
 import * as admin from "firebase-admin";
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
+import {defineSecret} from "firebase-functions/params";
 
 admin.initializeApp();
+
+// CSFloat API key, stored in Google Secret Manager (set once via
+// `firebase functions:secrets:set CSFLOAT_API_KEY`). Steam Market needs
+// no key; CSFloat requires this in the Authorization header.
+const csfloatApiKey = defineSecret("CSFLOAT_API_KEY");
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Parses a USD price string from the Steam Market (e.g. "$1,234.96")
+ * into a number. Returns null for missing/zero/unparseable values.
+ */
+function parseUsdPrice(raw: string | undefined): number | null {
+  if (!raw) return null;
+  // Strip everything except digits and the decimal point ($ and the
+  // thousands comma both go). USD format uses "." as the decimal sep.
+  const cleaned = raw.replace(/[^0-9.]/g, "");
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Fetches the lowest Steam Market price for an item via priceoverview.
+ * One 429-retry after a 5s wait. Returns dollars, or null if no listing.
+ */
+async function fetchSteamPrice(marketHashName: string): Promise<number | null> {
+  const url = "https://steamcommunity.com/market/priceoverview/" +
+    `?appid=730&currency=1&market_hash_name=${encodeURIComponent(marketHashName)}`;
+  try {
+    let res = await fetch(url);
+    if (res.status === 429) {
+      await sleep(5000);
+      res = await fetch(url);
+    }
+    if (!res.ok) return null;
+    const data = await res.json() as {
+      success?: boolean; lowest_price?: string; median_price?: string;
+    };
+    if (data.success !== true) return null;
+    return parseUsdPrice(data.lowest_price ?? data.median_price);
+  } catch (e) {
+    console.warn(`Steam price fetch failed for "${marketHashName}":`, e);
+    return null;
+  }
+}
+
+/**
+ * Fetches the lowest CSFloat listing price (cents -> dollars). Honors
+ * the x-ratelimit-reset header on a 429 with a single bounded retry.
+ */
+async function fetchCsfloatPrice(
+  marketHashName: string,
+  apiKey: string,
+): Promise<number | null> {
+  const url = "https://csfloat.com/api/v1/listings" +
+    `?market_hash_name=${encodeURIComponent(marketHashName)}` +
+    "&sort_by=lowest_price&type=buy_now&limit=1";
+  const headers = {Authorization: apiKey};
+  try {
+    let res = await fetch(url, {headers});
+    if (res.status === 429) {
+      const reset = parseInt(res.headers.get("x-ratelimit-reset") ?? "0", 10);
+      const waitMs = reset > 0 ?
+        Math.min(Math.max(reset * 1000 - Date.now(), 2000), 120000) : 5000;
+      await sleep(waitMs);
+      res = await fetch(url, {headers});
+    }
+    if (!res.ok) return null;
+    const data = await res.json() as
+      {price?: number}[] | {data?: {price?: number}[]};
+    const listings = Array.isArray(data) ? data : (data.data ?? []);
+    if (listings.length === 0) return null;
+    const cents = listings[0]?.price;
+    return typeof cents === "number" && cents > 0 ? cents / 100 : null;
+  } catch (e) {
+    console.warn(`CSFloat price fetch failed for "${marketHashName}":`, e);
+    return null;
+  }
+}
 
 /**
  * Creates a Firebase custom auth token for a Steam user.
@@ -49,32 +130,39 @@ export const createCustomToken = onCall(
 );
 
 /**
- * Daily maintenance of 24-hour price-change figures.
+ * Daily server-side price refresh + 24-hour change computation.
  *
- * The `prices/{marketHashName}` collection stores the latest known
- * Steam Market price per item, written by the app whenever a user
- * fetches prices. Those docs carry `currentPrice` but no notion of
- * how the price has moved — so the app's price-change badge always
- * read 0.
+ * The `prices/{marketHashName}` collection is the watch list — every
+ * item the app has ever priced. This scheduled function runs once a
+ * day and, for each doc:
+ *   1. Fetches a fresh Steam Market price and CSFloat price (the two
+ *      sources are queried concurrently per item).
+ *   2. Writes `currentPrice` / `csfloatPrice`.
+ *   3. Computes `priceChange24h` as the percent change between the new
+ *      Steam price and the baseline snapshotted on the previous run,
+ *      then re-snapshots `previousPrice24h` to today's price.
  *
- * This scheduled function runs once a day and, for each price doc:
- *   1. Computes `priceChange24h` as the percent change between the
- *      current price and the baseline snapshotted on the previous run.
- *   2. Re-snapshots `previousPrice24h = currentPrice` so tomorrow's run
- *      compares against today.
+ * Centralizing the fetch here (instead of relying on the app to fetch
+ * whenever it happens to be opened) gives a regular daily cadence, so
+ * the 24h change is a true day-over-day delta. The app still keeps its
+ * own manual fetch as a fallback and reads these values on open.
  *
- * Because prices are only refreshed when the app fetches them, a
- * `currentPrice` that hasn't moved since the last snapshot yields a
- * 0% change — which is the honest answer ("no new price observed"),
- * not an error. Items with a missing or non-positive current/baseline
- * price are skipped to avoid divide-by-zero and bogus percentages.
+ * Pacing: items are processed serially with a ~2s gap to respect Steam
+ * Market's rate limit; both source calls per item run in parallel. A
+ * wall-clock guard stops before the 540s timeout — any unreached items
+ * keep their existing prices and refresh on the next run.
  *
- * Requires the Blaze plan (scheduled functions use Cloud Scheduler).
- * At ~150 price docs this is ~150 reads + ~150 writes/day, comfortably
- * within the free allotment.
+ * Requires the Blaze plan (Cloud Scheduler) and the CSFLOAT_API_KEY
+ * secret. ~200 items is ~200 reads + ~200 writes/day, within free tier.
  */
 export const updatePriceChanges = onSchedule(
-  {schedule: "every day 00:00", timeZone: "Etc/UTC"},
+  {
+    schedule: "every day 00:00",
+    timeZone: "Etc/UTC",
+    timeoutSeconds: 540,
+    memory: "256MiB",
+    secrets: [csfloatApiKey],
+  },
   async () => {
     const db = admin.firestore();
     const snapshot = await db.collection("prices").get();
@@ -84,52 +172,75 @@ export const updatePriceChanges = onSchedule(
       return;
     }
 
+    const apiKey = csfloatApiKey.value();
+    const startMs = Date.now();
+    // Leave headroom under the 540s timeout so in-flight writes finish.
+    const TIME_BUDGET_MS = 500_000;
+
     let updated = 0;
+    let steamOk = 0;
+    let csfloatOk = 0;
     let skipped = 0;
+    let unreached = 0;
 
-    // Firestore batches cap at 500 ops; chunk to stay safe as the
-    // collection grows.
-    const CHUNK = 450;
-    const docs = snapshot.docs;
-
-    for (let i = 0; i < docs.length; i += CHUNK) {
-      const batch = db.batch();
-      const chunk = docs.slice(i, i + CHUNK);
-
-      for (const doc of chunk) {
-        const data = doc.data();
-        const current = typeof data.currentPrice === "number" ?
-          data.currentPrice : null;
-        const baseline = typeof data.previousPrice24h === "number" ?
-          data.previousPrice24h : null;
-
-        if (current === null || current <= 0) {
-          skipped++;
-          continue;
-        }
-
-        const update: Record<string, unknown> = {
-          previousPrice24h: current,
-          priceChangeComputedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-
-        // Only compute a change once we have a valid prior baseline.
-        if (baseline !== null && baseline > 0) {
-          const change = ((current - baseline) / baseline) * 100;
-          // Round to one decimal to match the badge's display precision.
-          update.priceChange24h = Math.round(change * 10) / 10;
-        }
-
-        batch.set(doc.ref, update, {merge: true});
-        updated++;
+    for (const doc of snapshot.docs) {
+      if (Date.now() - startMs > TIME_BUDGET_MS) {
+        unreached = snapshot.size - (updated + skipped);
+        console.log(`updatePriceChanges: time budget hit, ${unreached} unreached`);
+        break;
       }
 
-      await batch.commit();
+      const data = doc.data();
+      const name = typeof data.marketHashName === "string" ?
+        data.marketHashName : null;
+      if (!name) {
+        skipped++;
+        continue;
+      }
+
+      const [steamPrice, csfloatPrice] = await Promise.all([
+        fetchSteamPrice(name),
+        fetchCsfloatPrice(name, apiKey),
+      ]);
+
+      if (steamPrice === null && csfloatPrice === null) {
+        skipped++;
+        await sleep(2000);
+        continue;
+      }
+
+      const update: Record<string, unknown> = {
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+        priceChangeComputedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (steamPrice !== null) {
+        const baseline = typeof data.previousPrice24h === "number" ?
+          data.previousPrice24h : null;
+        update.currentPrice = steamPrice;
+        update.previousPrice24h = steamPrice; // baseline for tomorrow
+        if (baseline !== null && baseline > 0) {
+          const change = ((steamPrice - baseline) / baseline) * 100;
+          update.priceChange24h = Math.round(change * 10) / 10;
+        }
+        steamOk++;
+      }
+      if (csfloatPrice !== null) {
+        update.csfloatPrice = csfloatPrice;
+        csfloatOk++;
+      }
+
+      await doc.ref.set(update, {merge: true});
+      updated++;
+
+      // Pace to respect Steam Market's rate limit.
+      await sleep(2000);
     }
 
     console.log(
-      `updatePriceChanges: updated ${updated}, skipped ${skipped} ` +
-      `(of ${docs.length} price docs)`
+      `updatePriceChanges: ${updated} updated ` +
+      `(steam ${steamOk}, csfloat ${csfloatOk}), ${skipped} skipped, ` +
+      `${unreached} unreached of ${snapshot.size}`
     );
   }
 );

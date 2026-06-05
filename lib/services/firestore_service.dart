@@ -33,6 +33,21 @@ class SyncState {
   });
 }
 
+/// Server-maintained price fields for one item, read from the shared
+/// `prices` collection. Any field may be null if the scheduled refresh
+/// hasn't populated it yet.
+class ServerPriceData {
+  final double? currentPrice;
+  final double? csfloatPrice;
+  final double? priceChange24h;
+
+  const ServerPriceData({
+    this.currentPrice,
+    this.csfloatPrice,
+    this.priceChange24h,
+  });
+}
+
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
@@ -321,28 +336,31 @@ class FirestoreService {
     return prices;
   }
 
-  /// Loads 24h price-change percentages from the shared prices
-  /// collection, keyed by marketHashName.
+  /// Loads server-maintained price data (currentPrice, csfloatPrice,
+  /// priceChange24h) from the shared prices collection, keyed by
+  /// marketHashName.
   ///
-  /// The `priceChange24h` field is maintained server-side by the
-  /// `updatePriceChanges` scheduled Cloud Function — the app only
-  /// reads it. Docs without the field yet (never processed by a
-  /// scheduled run) are omitted.
-  Future<Map<String, double>> loadPriceChanges() async {
+  /// These fields are refreshed daily by the `updatePriceChanges`
+  /// scheduled Cloud Function — the app reads them on open so prices
+  /// stay current without depending on a manual fetch. Reads the whole
+  /// collection in one query.
+  Future<Map<String, ServerPriceData>> loadServerPrices() async {
     final snapshot = await _db.collection('prices').get();
-    final changes = <String, double>{};
+    final result = <String, ServerPriceData>{};
 
     for (final doc in snapshot.docs) {
       final data = doc.data();
       final name = data['marketHashName'] as String?;
-      final change = (data['priceChange24h'] as num?)?.toDouble();
-      if (name != null && change != null) {
-        changes[name] = change;
-      }
+      if (name == null) continue;
+      result[name] = ServerPriceData(
+        currentPrice: (data['currentPrice'] as num?)?.toDouble(),
+        csfloatPrice: (data['csfloatPrice'] as num?)?.toDouble(),
+        priceChange24h: (data['priceChange24h'] as num?)?.toDouble(),
+      );
     }
 
-    debugPrint('Loaded ${changes.length} price changes from Firestore');
-    return changes;
+    debugPrint('Loaded ${result.length} server prices from Firestore');
+    return result;
   }
 
   // ── Retry Logic ─────────────────────────────────────────
