@@ -159,7 +159,9 @@ export const updatePriceChanges = onSchedule(
   {
     schedule: "every day 00:00",
     timeZone: "Etc/UTC",
-    timeoutSeconds: 540,
+    // ~200 items at ~2.9s each is ~575s; 900s leaves headroom so the
+    // whole watch list refreshes in one run (no permanently-stale tail).
+    timeoutSeconds: 900,
     memory: "256MiB",
     secrets: [csfloatApiKey],
   },
@@ -174,8 +176,10 @@ export const updatePriceChanges = onSchedule(
 
     const apiKey = csfloatApiKey.value();
     const startMs = Date.now();
-    // Leave headroom under the 540s timeout so in-flight writes finish.
-    const TIME_BUDGET_MS = 500_000;
+    // Safety net under the 900s timeout so in-flight writes finish.
+    // At normal pace all 200 items finish well before this; the guard
+    // only trips if a burst of 429 retries slows things down.
+    const TIME_BUDGET_MS = 850_000;
 
     let updated = 0;
     let steamOk = 0;
