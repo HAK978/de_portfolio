@@ -363,6 +363,21 @@ class FirestoreService {
     return result;
   }
 
+  /// Reads the timestamp of the last server-side price refresh from
+  /// `meta/priceRefresh`. Returns null if the doc/field is missing or
+  /// the read fails. Used by the home "prices updated at" label.
+  Future<DateTime?> loadPriceRefreshTime() async {
+    try {
+      final doc = await _db.collection('meta').doc('priceRefresh').get();
+      final ts = doc.data()?['lastRun'];
+      if (ts is Timestamp) return ts.toDate();
+      return null;
+    } catch (e) {
+      debugPrint('loadPriceRefreshTime failed: $e');
+      return null;
+    }
+  }
+
   // ── Retry Logic ─────────────────────────────────────────
 
   /// Commits a Firestore batch with one retry on timeout.

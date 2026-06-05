@@ -35,6 +35,13 @@ service cloud.firestore {
         && request.auth.uid == '76561198369694237';
     }
 
+    // Server metadata (e.g. priceRefresh.lastRun) — any authenticated
+    // user can read; only Cloud Functions (Admin SDK) write it.
+    match /meta/{docId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
     // Alerts — users can only manage their own alerts
     match /alerts/{alertId} {
       allow read, write: if request.auth != null

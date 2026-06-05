@@ -580,13 +580,26 @@ class _LastUpdatedLabelState extends ConsumerState<_LastUpdatedLabel> {
 
   Future<void> _load() async {
     try {
+      // The displayed time is the most recent of: the server's last
+      // price refresh (every 4h) and any local manual fetch. Prices now
+      // come primarily from the server, so this usually reflects that.
+      DateTime? dt;
+
+      final serverTime = await ref.read(firestoreServiceProvider).loadPriceRefreshTime();
+      if (serverTime != null) dt = serverTime;
+
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/last_price_fetch.txt');
-      if (!file.existsSync()) return;
-      final ts = int.tryParse(await file.readAsString());
-      if (ts == null) return;
+      if (file.existsSync()) {
+        final ts = int.tryParse(await file.readAsString());
+        if (ts != null) {
+          final localDt = DateTime.fromMillisecondsSinceEpoch(ts);
+          if (dt == null || localDt.isAfter(dt)) dt = localDt;
+        }
+      }
 
-      final dt = DateTime.fromMillisecondsSinceEpoch(ts);
+      if (dt == null) return;
+
       final now = DateTime.now();
       final today = DateTime(now.year, now.month, now.day);
       final yesterday = today.subtract(const Duration(days: 1));

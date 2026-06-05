@@ -129,35 +129,39 @@ export const createCustomToken = onCall(
   }
 );
 
+// Roll the 24h baseline only when it's this old, so fetching every 4h
+// doesn't turn priceChange24h into a 4h change. The baseline rolls
+// ~once per day; intraday runs compute change against it.
+const BASELINE_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+
 /**
- * Daily server-side price refresh + 24-hour change computation.
+ * Server-side price refresh (every 4 hours) + 24-hour change tracking.
  *
  * The `prices/{marketHashName}` collection is the watch list — every
- * item the app has ever priced. This scheduled function runs once a
- * day and, for each doc:
- *   1. Fetches a fresh Steam Market price and CSFloat price (the two
- *      sources are queried concurrently per item).
- *   2. Writes `currentPrice` / `csfloatPrice`.
- *   3. Computes `priceChange24h` as the percent change between the new
- *      Steam price and the baseline snapshotted on the previous run,
- *      then re-snapshots `previousPrice24h` to today's price.
+ * item the app has ever priced. Each run, for every doc:
+ *   1. Fetches a fresh Steam Market price and CSFloat price (queried
+ *      concurrently per item).
+ *   2. Writes `currentPrice` / `csfloatPrice` on every run, so prices
+ *      stay fresh to within ~4 hours.
+ *   3. Computes `priceChange24h` against `previousPrice24h`, the daily
+ *      baseline. The baseline is only re-snapshotted when it's ~24h old
+ *      (tracked by `baselineTakenAt`), so the change stays a true
+ *      day-over-day delta even though the fetch runs 6×/day.
  *
- * Centralizing the fetch here (instead of relying on the app to fetch
- * whenever it happens to be opened) gives a regular daily cadence, so
- * the 24h change is a true day-over-day delta. The app still keeps its
- * own manual fetch as a fallback and reads these values on open.
+ * After the loop it stamps `meta/priceRefresh` with `lastRun` so the
+ * app can show "prices updated at <time>" from the real server run.
  *
  * Pacing: items are processed serially with a ~2s gap to respect Steam
  * Market's rate limit; both source calls per item run in parallel. A
- * wall-clock guard stops before the 540s timeout — any unreached items
+ * wall-clock guard stops before the 900s timeout — any unreached items
  * keep their existing prices and refresh on the next run.
  *
  * Requires the Blaze plan (Cloud Scheduler) and the CSFLOAT_API_KEY
- * secret. ~200 items is ~200 reads + ~200 writes/day, within free tier.
+ * secret.
  */
 export const updatePriceChanges = onSchedule(
   {
-    schedule: "every day 00:00",
+    schedule: "every 4 hours",
     timeZone: "Etc/UTC",
     // ~200 items at ~2.9s each is ~575s; 900s leaves headroom so the
     // whole watch list refreshes in one run (no permanently-stale tail).
@@ -177,13 +181,12 @@ export const updatePriceChanges = onSchedule(
     const apiKey = csfloatApiKey.value();
     const startMs = Date.now();
     // Safety net under the 900s timeout so in-flight writes finish.
-    // At normal pace all 200 items finish well before this; the guard
-    // only trips if a burst of 429 retries slows things down.
     const TIME_BUDGET_MS = 850_000;
 
     let updated = 0;
     let steamOk = 0;
     let csfloatOk = 0;
+    let rolled = 0;
     let skipped = 0;
     let unreached = 0;
 
@@ -221,11 +224,24 @@ export const updatePriceChanges = onSchedule(
       if (steamPrice !== null) {
         const baseline = typeof data.previousPrice24h === "number" ?
           data.previousPrice24h : null;
+        const baselineAt = typeof data.baselineTakenAt === "number" ?
+          data.baselineTakenAt : null;
         update.currentPrice = steamPrice;
-        update.previousPrice24h = steamPrice; // baseline for tomorrow
+
+        // Compute the change against the EXISTING baseline first.
         if (baseline !== null && baseline > 0) {
           const change = ((steamPrice - baseline) / baseline) * 100;
           update.priceChange24h = Math.round(change * 10) / 10;
+        }
+
+        // Then roll the baseline only if it's missing or ~24h old, so
+        // every-4h fetches don't shrink the comparison window.
+        const nowMs = Date.now();
+        if (baseline === null || baselineAt === null ||
+            (nowMs - baselineAt) >= BASELINE_MAX_AGE_MS) {
+          update.previousPrice24h = steamPrice;
+          update.baselineTakenAt = nowMs;
+          rolled++;
         }
         steamOk++;
       }
@@ -241,10 +257,21 @@ export const updatePriceChanges = onSchedule(
       await sleep(2000);
     }
 
+    // Stamp the run so the app can show a real "prices updated at" time.
+    await db.collection("meta").doc("priceRefresh").set({
+      lastRun: admin.firestore.FieldValue.serverTimestamp(),
+      updated,
+      steamOk,
+      csfloatOk,
+      skipped,
+      unreached,
+      total: snapshot.size,
+    }, {merge: true});
+
     console.log(
       `updatePriceChanges: ${updated} updated ` +
-      `(steam ${steamOk}, csfloat ${csfloatOk}), ${skipped} skipped, ` +
-      `${unreached} unreached of ${snapshot.size}`
+      `(steam ${steamOk}, csfloat ${csfloatOk}, baselines rolled ${rolled}), ` +
+      `${skipped} skipped, ${unreached} unreached of ${snapshot.size}`
     );
   }
 );
