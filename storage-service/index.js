@@ -74,6 +74,11 @@ let currentRefreshToken = '';
 // CS2 playtime on the user's profile.
 const GC_IDLE_MS = 30 * 1000;
 let gcIdleTimer = null;
+// Number of in-flight GC operations (e.g. casket fetches). The idle
+// timer must not release the GC while this is > 0 — a large casket can
+// take 30-60s to enumerate, longer than GC_IDLE_MS, and dropping the
+// game session mid-fetch aborts the request.
+let gcBusyCount = 0;
 
 // ── Steam event handlers ──────────────────────────────────
 
@@ -189,12 +194,27 @@ function cancelIdleTimer() {
 function armIdleTimer() {
   cancelIdleTimer();
   gcIdleTimer = setTimeout(() => {
-    if (isGCConnected) {
+    // Defensive: never release while a GC operation is still running,
+    // even if the timer was somehow armed during one.
+    if (isGCConnected && gcBusyCount === 0) {
       console.log(`[GC] Idle ${GC_IDLE_MS / 1000}s — releasing gamesPlayed([])`);
       user.gamesPlayed([]);
     }
     gcIdleTimer = null;
   }, GC_IDLE_MS);
+}
+
+// Bracket a long-running GC operation so the idle timer can't release
+// the game session mid-flight. beginGCWork() holds the GC up; endGCWork()
+// re-arms the idle countdown only once all work is done.
+function beginGCWork() {
+  gcBusyCount++;
+  cancelIdleTimer();
+}
+
+function endGCWork() {
+  if (gcBusyCount > 0) gcBusyCount--;
+  if (gcBusyCount === 0) armIdleTimer();
 }
 
 function waitForGC(timeoutMs = 15000) {
@@ -401,17 +421,21 @@ app.get('/storage/:casketId', async (req, res) => {
     });
   }
   _inflightCaskets.add(casketId);
+  // Hold the GC session up for the whole fetch — a large casket can take
+  // longer than GC_IDLE_MS to enumerate, and the idle timer must not drop
+  // the game session mid-fetch (that was aborting large-casket loads).
+  beginGCWork();
 
   console.log(`[API] Fetching contents of casket ${casketId}...`);
 
   const fetchStart = Date.now();
   try {
-    // 60s timeout — large caskets (~1k items) routinely take 30+ seconds
-    // for the GC to enumerate, especially on a cold connection.
+    // 110s timeout — large caskets (~1k items) can take well over a
+    // minute for the GC to enumerate on a cold connection.
     const rawItems = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('Casket contents request timed out (60s) — try again, the GC was slow'));
-      }, 60000);
+        reject(new Error('Casket contents request timed out (110s) — try again, the GC was slow'));
+      }, 110000);
 
       csgo.getCasketContents(casketId, (err, items) => {
         clearTimeout(timeout);
@@ -441,6 +465,9 @@ app.get('/storage/:casketId', async (req, res) => {
       (Date.now() - fetchStart) / 1000,
     );
     _inflightCaskets.delete(casketId);
+    // Release the hold and re-arm the idle countdown now that the fetch
+    // is done (or failed).
+    endGCWork();
   }
 });
 
