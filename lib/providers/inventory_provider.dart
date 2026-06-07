@@ -312,15 +312,21 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
         final newCurrent = sp.currentPrice ?? item.currentPrice;
         final newCsfloat = sp.csfloatPrice ?? item.csfloatPrice;
         final newChange = sp.priceChange24h ?? item.priceChange24h;
+        final newChange7d = sp.priceChange7d ?? item.priceChange7d;
+        final newChange30d = sp.priceChange30d ?? item.priceChange30d;
 
         if (newCurrent != item.currentPrice ||
             newCsfloat != item.csfloatPrice ||
-            newChange != item.priceChange24h) {
+            newChange != item.priceChange24h ||
+            newChange7d != item.priceChange7d ||
+            newChange30d != item.priceChange30d) {
           anyApplied = true;
           return item.copyWith(
             currentPrice: newCurrent,
             csfloatPrice: newCsfloat,
             priceChange24h: newChange,
+            priceChange7d: newChange7d,
+            priceChange30d: newChange30d,
           );
         }
         return item;
@@ -505,20 +511,100 @@ final totalItemCountProvider = Provider<int>((ref) {
   return invCount + storCount;
 });
 
-/// Top gainers — items with biggest positive 24h price change.
-final topGainersProvider = Provider<List<CS2Item>>((ref) {
-  final items = ref.watch(mainInventoryProvider);
-  final sorted = [...items]..sort(
-    (a, b) => b.priceChange24h.compareTo(a.priceChange24h),
-  );
-  return sorted.where((i) => i.priceChange24h > 0).take(5).toList();
+/// The category options shown in the Top Movers filter chips. "All"
+/// means no category filter. The rest match CS2Item.weaponType values.
+const moverCategories = [
+  'All', 'Rifle', 'Pistol', 'SMG', 'Shotgun', 'Machine Gun',
+  'Knife', 'Gloves', 'Container', 'Sticker', 'Agent', 'Patch', 'Graffiti',
+];
+
+/// Per-unit dollar change over 24h, reconstructed from the current price
+/// and the percent change: baseline = current / (1 + pct/100), and the
+/// dollar move = current - baseline. Negative for losers.
+double dollarChange24h(CS2Item item) {
+  final pct = item.priceChange24h;
+  if (pct == 0) return 0;
+  final baseline = item.currentPrice / (1 + pct / 100);
+  return item.currentPrice - baseline;
+}
+
+/// Filter/sort state for the home "Top Movers" section.
+class MoversFilter {
+  /// Exclude items priced below this (kills penny-rounding noise like a
+  /// $0.03 graffiti showing +33%).
+  final double minPrice;
+
+  /// false = rank by percent change; true = rank by dollar change.
+  final bool rankByDollar;
+
+  /// 'All' or a CS2Item.weaponType to narrow to one category.
+  final String category;
+
+  const MoversFilter({
+    this.minPrice = 1.0,
+    this.rankByDollar = false,
+    this.category = 'All',
+  });
+
+  MoversFilter copyWith({double? minPrice, bool? rankByDollar, String? category}) {
+    return MoversFilter(
+      minPrice: minPrice ?? this.minPrice,
+      rankByDollar: rankByDollar ?? this.rankByDollar,
+      category: category ?? this.category,
+    );
+  }
+}
+
+class MoversFilterNotifier extends Notifier<MoversFilter> {
+  @override
+  MoversFilter build() => const MoversFilter();
+
+  void setMinPrice(double v) => state = state.copyWith(minPrice: v);
+  void setRankByDollar(bool v) => state = state.copyWith(rankByDollar: v);
+  void setCategory(String v) => state = state.copyWith(category: v);
+}
+
+final moversFilterProvider =
+    NotifierProvider<MoversFilterNotifier, MoversFilter>(MoversFilterNotifier.new);
+
+/// Inventory items eligible to be movers after the price-floor and
+/// category filters (but before the gain/loss split).
+List<CS2Item> _eligibleMovers(List<CS2Item> items, MoversFilter f) {
+  return items.where((i) {
+    if (i.currentPrice < f.minPrice) return false;
+    if (f.category != 'All' && i.weaponType != f.category) return false;
+    return true;
+  }).toList();
+}
+
+/// True if any inventory item has a non-zero 24h change — used to decide
+/// whether to show the Top Movers section (and its controls) at all.
+final hasMoverDataProvider = Provider<bool>((ref) {
+  return ref.watch(mainInventoryProvider).any((i) => i.priceChange24h != 0);
 });
 
-/// Top losers — items with biggest negative 24h price change.
+/// Top gainers — biggest positive 24h movers, after filters, ranked by
+/// the chosen measure (% or $).
+final topGainersProvider = Provider<List<CS2Item>>((ref) {
+  final f = ref.watch(moversFilterProvider);
+  final gainers = _eligibleMovers(ref.watch(mainInventoryProvider), f)
+      .where((i) => i.priceChange24h > 0)
+      .toList();
+  gainers.sort((a, b) => f.rankByDollar
+      ? dollarChange24h(b).compareTo(dollarChange24h(a))
+      : b.priceChange24h.compareTo(a.priceChange24h));
+  return gainers.take(5).toList();
+});
+
+/// Top losers — biggest negative 24h movers, after filters, ranked by
+/// the chosen measure (% or $).
 final topLosersProvider = Provider<List<CS2Item>>((ref) {
-  final items = ref.watch(mainInventoryProvider);
-  final sorted = [...items]..sort(
-    (a, b) => a.priceChange24h.compareTo(b.priceChange24h),
-  );
-  return sorted.where((i) => i.priceChange24h < 0).take(5).toList();
+  final f = ref.watch(moversFilterProvider);
+  final losers = _eligibleMovers(ref.watch(mainInventoryProvider), f)
+      .where((i) => i.priceChange24h < 0)
+      .toList();
+  losers.sort((a, b) => f.rankByDollar
+      ? dollarChange24h(a).compareTo(dollarChange24h(b))
+      : a.priceChange24h.compareTo(b.priceChange24h));
+  return losers.take(5).toList();
 });

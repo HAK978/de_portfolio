@@ -278,13 +278,15 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
           ],
           const SizedBox(height: 12),
 
+          // Price history chart — kept above the (long, collapsible)
+          // case-contents list so it's reachable without scrolling past
+          // every drop.
+          _PriceHistorySection(marketHashName: item.marketHashName),
+
           // "Contains" drops section — only for containers that have
-          // drop data loaded from ByMykel.
+          // drop data loaded from ByMykel. Collapsible (see widget).
           if (item.weaponType == 'Container')
             _CaseContentsSection(marketHashName: item.marketHashName),
-
-          // Price history chart
-          _PriceHistorySection(marketHashName: item.marketHashName),
         ],
       ),
     );
@@ -398,17 +400,23 @@ class _ItemDetailScreenState extends ConsumerState<ItemDetailScreen> {
 
 class _PriceChangeColumn extends StatelessWidget {
   final String label;
-  final double percentage;
+  final double? percentage;
 
   const _PriceChangeColumn({required this.label, required this.percentage});
 
   @override
   Widget build(BuildContext context) {
+    final pct = percentage;
     return Column(
       children: [
         Text(label, style: TextStyle(color: Colors.grey[400], fontSize: 12)),
         const SizedBox(height: 4),
-        PriceChangeBadge(percentage: percentage),
+        // Null = the server baseline for this window hasn't matured yet
+        // (7d needs a week of data, 30d a month) — show a dash, not 0%.
+        if (pct == null)
+          Text('—', style: TextStyle(color: Colors.grey[600], fontSize: 13))
+        else
+          PriceChangeBadge(percentage: pct),
       ],
     );
   }
@@ -425,10 +433,19 @@ class _DetailRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(label, style: TextStyle(color: Colors.grey[400])),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w500)),
+          const SizedBox(width: 16),
+          // Expanded + right-align so long values (collections, floats)
+          // wrap instead of overflowing the row.
+          Expanded(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+          ),
         ],
       ),
     );
@@ -556,49 +573,52 @@ class _CaseContentsSection extends ConsumerWidget {
       ...grouped.keys.where((r) => !rarityOrder.contains(r)),
     ];
 
+    final skinCount = contents.contains.length + contents.containsRare.length;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Contains',
-                style: TextStyle(color: Colors.grey[400], fontSize: 14),
-              ),
-              const SizedBox(height: 12),
-              if (contents.containsRare.isNotEmpty) ...[
-                Text(
-                  'Rare Special Item',
-                  style: TextStyle(
-                    color: Colors.amber[300],
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                ...contents.containsRare.map(
-                  (d) => _CaseDropTile(drop: d),
-                ),
-                const Divider(height: 24),
-              ],
-              for (final rarity in orderedRarities) ...[
-                Text(
-                  rarity,
-                  style: TextStyle(
-                    color: _parseHexColor(grouped[rarity]!.first.rarityColor),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                ...grouped[rarity]!.map((d) => _CaseDropTile(drop: d)),
-                const SizedBox(height: 10),
-              ],
-            ],
+        child: ExpansionTile(
+          // Collapsed by default so the chart above stays the focus and
+          // the long drop list doesn't bury the rest of the page.
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          title: Text(
+            'Contains ($skinCount skins)',
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
           ),
+          children: [
+            if (contents.containsRare.isNotEmpty) ...[
+              Text(
+                'Rare Special Item',
+                style: TextStyle(
+                  color: Colors.amber[300],
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              ...contents.containsRare.map(
+                (d) => _CaseDropTile(drop: d),
+              ),
+              const Divider(height: 24),
+            ],
+            for (final rarity in orderedRarities) ...[
+              Text(
+                rarity,
+                style: TextStyle(
+                  color: _parseHexColor(grouped[rarity]!.first.rarityColor),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              ...grouped[rarity]!.map((d) => _CaseDropTile(drop: d)),
+              const SizedBox(height: 10),
+            ],
+          ],
         ),
       ),
     );

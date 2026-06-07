@@ -210,6 +210,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final storageUnits = ref.watch(storageUnitsProvider);
     final topGainers = ref.watch(topGainersProvider);
     final topLosers = ref.watch(topLosersProvider);
+    final hasMoverData = ref.watch(hasMoverDataProvider);
     final priceFetch = ref.watch(priceFetchProvider);
     final csfloatFetch = ref.watch(csfloatFetchProvider);
     final steamFetching = ref.watch(steamFetchInProgressProvider);
@@ -312,35 +313,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const _LastUpdatedLabel(),
           const SizedBox(height: 20),
 
-          if (topGainers.isNotEmpty) ...[
+          if (hasMoverData) ...[
+            const _MoversControls(),
+            const SizedBox(height: 12),
+
             _SectionHeader(
               title: 'Top Gainers (24h)',
               icon: Icons.trending_up,
               iconColor: Colors.greenAccent,
             ),
             const SizedBox(height: 8),
-            ...topGainers.map(
-              (item) => ItemCard(
-                item: item,
-                onTap: () => context.go('/inventory/${item.id}'),
+            if (topGainers.isEmpty)
+              const _NoMoversHint()
+            else
+              ...topGainers.map(
+                (item) => ItemCard(
+                  item: item,
+                  onTap: () => context.go('/inventory/${item.id}'),
+                ),
               ),
-            ),
             const SizedBox(height: 24),
-          ],
 
-          if (topLosers.isNotEmpty) ...[
             _SectionHeader(
               title: 'Top Losers (24h)',
               icon: Icons.trending_down,
               iconColor: Colors.redAccent,
             ),
             const SizedBox(height: 8),
-            ...topLosers.map(
-              (item) => ItemCard(
-                item: item,
-                onTap: () => context.go('/inventory/${item.id}'),
+            if (topLosers.isEmpty)
+              const _NoMoversHint()
+            else
+              ...topLosers.map(
+                (item) => ItemCard(
+                  item: item,
+                  onTap: () => context.go('/inventory/${item.id}'),
+                ),
               ),
-            ),
           ],
         ],
       ),
@@ -558,6 +566,147 @@ class _SectionHeader extends StatelessWidget {
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
       ],
+    );
+  }
+}
+
+/// Filter/sort controls for the Top Movers section: a %/$ ranking
+/// toggle, a price-floor slider (excludes cheap penny-rounding noise),
+/// and category chips. Writes to [moversFilterProvider]; the gainers/
+/// losers lists react automatically.
+class _MoversControls extends ConsumerStatefulWidget {
+  const _MoversControls();
+
+  @override
+  ConsumerState<_MoversControls> createState() => _MoversControlsState();
+}
+
+class _MoversControlsState extends ConsumerState<_MoversControls> {
+  final _priceCtrl = TextEditingController();
+  final _priceFocus = FocusNode();
+
+  @override
+  void dispose() {
+    _priceCtrl.dispose();
+    _priceFocus.dispose();
+    super.dispose();
+  }
+
+  /// Parse the typed value and apply it; revert the field if invalid.
+  void _commitTyped() {
+    final parsed = double.tryParse(_priceCtrl.text.trim());
+    if (parsed != null && parsed >= 0) {
+      ref.read(moversFilterProvider.notifier).setMinPrice(parsed);
+    } else {
+      _priceCtrl.text =
+          ref.read(moversFilterProvider).minPrice.toStringAsFixed(2);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filter = ref.watch(moversFilterProvider);
+    final notifier = ref.read(moversFilterProvider.notifier);
+
+    // Keep the text field in sync with slider-driven changes, but don't
+    // overwrite what the user is actively typing.
+    if (!_priceFocus.hasFocus) {
+      final formatted = filter.minPrice.toStringAsFixed(2);
+      if (_priceCtrl.text != formatted) _priceCtrl.text = formatted;
+    }
+
+    // Let a typed value above the default range expand the slider so the
+    // two controls never contradict each other.
+    final sliderMax = filter.minPrice > 25 ? filter.minPrice : 25.0;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('%')),
+                ButtonSegment(value: true, label: Text('\$')),
+              ],
+              selected: {filter.rankByDollar},
+              onSelectionChanged: (s) => notifier.setRankByDollar(s.first),
+              showSelectedIcon: false,
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+            const Spacer(),
+            Text('Min ', style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+            SizedBox(
+              width: 72,
+              child: TextField(
+                controller: _priceCtrl,
+                focusNode: _priceFocus,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                textAlign: TextAlign.end,
+                style: const TextStyle(fontSize: 13),
+                decoration: const InputDecoration(
+                  prefixText: '\$',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+                ),
+                onTapOutside: (_) {
+                  if (_priceFocus.hasFocus) {
+                    _priceFocus.unfocus();
+                    _commitTyped();
+                  }
+                },
+                onSubmitted: (_) => _commitTyped(),
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: filter.minPrice.clamp(0, sliderMax).toDouble(),
+          min: 0,
+          max: sliderMax,
+          divisions: (sliderMax * 2).round(),
+          label: '\$${filter.minPrice.toStringAsFixed(2)}',
+          onChanged: (v) => notifier.setMinPrice(v),
+        ),
+        SizedBox(
+          height: 36,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: moverCategories.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, i) {
+              final cat = moverCategories[i];
+              return ChoiceChip(
+                label: Text(cat),
+                selected: filter.category == cat,
+                onSelected: (_) => notifier.setCategory(cat),
+                visualDensity: VisualDensity.compact,
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Shown in place of a gainers/losers list when the current filter
+/// excludes everything, so the controls stay reachable to adjust.
+class _NoMoversHint extends StatelessWidget {
+  const _NoMoversHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+      child: Text(
+        'No items match the filter — lower the min price or pick another category.',
+        style: TextStyle(color: Colors.grey[600], fontSize: 12),
+      ),
     );
   }
 }

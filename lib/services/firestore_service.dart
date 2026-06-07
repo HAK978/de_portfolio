@@ -40,11 +40,15 @@ class ServerPriceData {
   final double? currentPrice;
   final double? csfloatPrice;
   final double? priceChange24h;
+  final double? priceChange7d;
+  final double? priceChange30d;
 
   const ServerPriceData({
     this.currentPrice,
     this.csfloatPrice,
     this.priceChange24h,
+    this.priceChange7d,
+    this.priceChange30d,
   });
 }
 
@@ -356,6 +360,8 @@ class FirestoreService {
         currentPrice: (data['currentPrice'] as num?)?.toDouble(),
         csfloatPrice: (data['csfloatPrice'] as num?)?.toDouble(),
         priceChange24h: (data['priceChange24h'] as num?)?.toDouble(),
+        priceChange7d: (data['priceChange7d'] as num?)?.toDouble(),
+        priceChange30d: (data['priceChange30d'] as num?)?.toDouble(),
       );
     }
 

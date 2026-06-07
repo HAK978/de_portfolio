@@ -129,10 +129,42 @@ export const createCustomToken = onCall(
   }
 );
 
-// Roll the 24h baseline only when it's this old, so fetching every 4h
-// doesn't turn priceChange24h into a 4h change. The baseline rolls
-// ~once per day; intraday runs compute change against it.
-const BASELINE_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+// How old each baseline may get before it's re-snapshotted. Decoupled
+// from the 4h fetch cadence so each change figure stays a true delta
+// over its window (a small buffer under the nominal period lets the
+// roll land on a 4h run near the boundary).
+const BASELINE_24H_MS = 23 * 60 * 60 * 1000;
+const BASELINE_7D_MS = (7 * 24 - 2) * 60 * 60 * 1000;
+const BASELINE_30D_MS = (30 * 24 - 2) * 60 * 60 * 1000;
+
+function asNumber(v: unknown): number | null {
+  return typeof v === "number" ? v : null;
+}
+
+/**
+ * Computes a percent change against a stored baseline and decides
+ * whether to roll (re-snapshot) that baseline. The change is computed
+ * BEFORE rolling, so the roll run still reports the full-window delta.
+ */
+function rollBaseline(
+  current: number,
+  baseline: number | null,
+  baselineAt: number | null,
+  maxAgeMs: number,
+  nowMs: number,
+): {change: number | null; newBaseline: number; newBaselineAt: number} {
+  let change: number | null = null;
+  if (baseline !== null && baseline > 0) {
+    change = Math.round(((current - baseline) / baseline) * 100 * 10) / 10;
+  }
+  const stale = baseline === null || baselineAt === null ||
+    (nowMs - baselineAt) >= maxAgeMs;
+  return {
+    change,
+    newBaseline: stale ? current : baseline,
+    newBaselineAt: stale ? nowMs : baselineAt,
+  };
+}
 
 /**
  * Server-side price refresh (every 4 hours) + 24-hour change tracking.
@@ -222,27 +254,31 @@ export const updatePriceChanges = onSchedule(
       };
 
       if (steamPrice !== null) {
-        const baseline = typeof data.previousPrice24h === "number" ?
-          data.previousPrice24h : null;
-        const baselineAt = typeof data.baselineTakenAt === "number" ?
-          data.baselineTakenAt : null;
         update.currentPrice = steamPrice;
-
-        // Compute the change against the EXISTING baseline first.
-        if (baseline !== null && baseline > 0) {
-          const change = ((steamPrice - baseline) / baseline) * 100;
-          update.priceChange24h = Math.round(change * 10) / 10;
-        }
-
-        // Then roll the baseline only if it's missing or ~24h old, so
-        // every-4h fetches don't shrink the comparison window.
         const nowMs = Date.now();
-        if (baseline === null || baselineAt === null ||
-            (nowMs - baselineAt) >= BASELINE_MAX_AGE_MS) {
-          update.previousPrice24h = steamPrice;
-          update.baselineTakenAt = nowMs;
-          rolled++;
-        }
+
+        // Maintain three independent baselines (24h / 7d / 30d). Each
+        // computes its change against its current baseline, then rolls
+        // only when that baseline has aged past its window. 7d/30d stay
+        // unset (null) until enough time has passed for a real figure.
+        const r24 = rollBaseline(steamPrice, asNumber(data.previousPrice24h),
+          asNumber(data.baselineTakenAt), BASELINE_24H_MS, nowMs);
+        const r7 = rollBaseline(steamPrice, asNumber(data.previousPrice7d),
+          asNumber(data.baseline7dTakenAt), BASELINE_7D_MS, nowMs);
+        const r30 = rollBaseline(steamPrice, asNumber(data.previousPrice30d),
+          asNumber(data.baseline30dTakenAt), BASELINE_30D_MS, nowMs);
+
+        if (r24.change !== null) update.priceChange24h = r24.change;
+        if (r7.change !== null) update.priceChange7d = r7.change;
+        if (r30.change !== null) update.priceChange30d = r30.change;
+
+        update.previousPrice24h = r24.newBaseline;
+        update.baselineTakenAt = r24.newBaselineAt;
+        update.previousPrice7d = r7.newBaseline;
+        update.baseline7dTakenAt = r7.newBaselineAt;
+        update.previousPrice30d = r30.newBaseline;
+        update.baseline30dTakenAt = r30.newBaselineAt;
+        if (r24.newBaselineAt === nowMs) rolled++;
         steamOk++;
       }
       if (csfloatPrice !== null) {

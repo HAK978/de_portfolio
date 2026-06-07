@@ -15,8 +15,8 @@ class CS2Item {
   final double currentPrice; // Steam Community Market price
   final double? csfloatPrice; // CSFloat lowest listing price
   final double priceChange24h; // percentage
-  final double priceChange7d;
-  final double priceChange30d;
+  final double? priceChange7d; // null until the 7-day baseline matures
+  final double? priceChange30d; // null until the 30-day baseline matures
   final int quantity;
   final String location; // "inventory", "Storage Unit 1", etc.
   final String imageUrl;
@@ -38,8 +38,8 @@ class CS2Item {
     required this.currentPrice,
     this.csfloatPrice,
     this.priceChange24h = 0,
-    this.priceChange7d = 0,
-    this.priceChange30d = 0,
+    this.priceChange7d,
+    this.priceChange30d,
     this.quantity = 1,
     this.location = 'inventory',
     required this.imageUrl,
@@ -141,8 +141,8 @@ class CS2Item {
     currentPrice: (json['currentPrice'] as num).toDouble(),
     csfloatPrice: (json['csfloatPrice'] as num?)?.toDouble(),
     priceChange24h: (json['priceChange24h'] as num?)?.toDouble() ?? 0,
-    priceChange7d: (json['priceChange7d'] as num?)?.toDouble() ?? 0,
-    priceChange30d: (json['priceChange30d'] as num?)?.toDouble() ?? 0,
+    priceChange7d: (json['priceChange7d'] as num?)?.toDouble(),
+    priceChange30d: (json['priceChange30d'] as num?)?.toDouble(),
     quantity: json['quantity'] as int? ?? 1,
     location: json['location'] as String? ?? 'inventory',
     imageUrl: json['imageUrl'] as String,
