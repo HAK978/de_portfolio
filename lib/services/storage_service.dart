@@ -5,17 +5,26 @@ import 'package:http/http.dart' as http;
 
 import '../models/cs2_item.dart';
 
-/// Talks to the local Node.js storage service that connects to
-/// Steam's Game Coordinator to fetch storage unit contents.
+/// Client for the storage service (storage-service/ in this repo), which
+/// stays logged in to Steam on a small GCE VM and reads storage-unit
+/// contents and item floats from the CS2 Game Coordinator.
 ///
-/// The service runs at localhost:3456 on the same machine.
-/// For mobile, the phone must be on the same network and use
-/// the PC's local IP instead of localhost.
+/// It's served over HTTPS (Caddy) and every request carries the
+/// X-Api-Key header. The HTTP client is injectable for tests.
 class StorageService {
   final String baseUrl;
   final String? apiKey;
 
-  StorageService({required this.baseUrl, this.apiKey});
+  StorageService({required this.baseUrl, this.apiKey, http.Client? client})
+      : _client = client;
+
+  final http.Client? _client;
+
+  Future<http.Response> _get(String path, Duration timeout) {
+    final uri = Uri.parse('$baseUrl$path');
+    return (_client?.get(uri, headers: _headers) ?? http.get(uri, headers: _headers))
+        .timeout(timeout);
+  }
 
   Map<String, String> get _headers => {
     if (apiKey != null && apiKey!.isNotEmpty) 'X-Api-Key': apiKey!,
@@ -41,9 +50,7 @@ class StorageService {
   /// Check if the service is running and connected to GC.
   Future<StorageStatus> getStatus() async {
     try {
-      final response = await http
-          .get(Uri.parse('$baseUrl/status'), headers: _headers)
-          .timeout(const Duration(seconds: 5));
+      final response = await _get('/status', const Duration(seconds: 5));
 
       // Distinguish "wrong API key" from "no service at all" so the
       // ConnectionBar can prompt the user to fix the key instead of
@@ -65,6 +72,7 @@ class StorageService {
         steamConnected: data['steam'] as bool? ?? false,
         gcConnected: data['gc'] as bool? ?? false,
         displayName: data['displayName'] as String? ?? '',
+        steamId: data['steamId'] as String?,
       );
     } catch (e) {
       debugPrint('StorageService: status check failed — $e');
@@ -76,9 +84,7 @@ class StorageService {
   Future<List<CasketInfo>> getCaskets() async {
     // 30s allows for the VM's cold GC-connect path: gamesPlayed([730])
     // → waitForGC (up to ~15s) → waitForInventory (up to ~10s).
-    final response = await http
-        .get(Uri.parse('$baseUrl/caskets'), headers: _headers)
-        .timeout(const Duration(seconds: 30));
+    final response = await _get('/caskets', const Duration(seconds: 30));
 
     if (response.statusCode != 200) {
       throw _errorFromResponse(response, 'Failed to fetch caskets');
@@ -103,9 +109,7 @@ class StorageService {
     // 125s — 15s buffer over the server's 110s casket-contents timeout
     // so the server fires first with a clear "GC was slow" message
     // instead of the client throwing a generic TimeoutException.
-    final response = await http
-        .get(Uri.parse('$baseUrl/storage/$casketId'), headers: _headers)
-        .timeout(const Duration(seconds: 125));
+    final response = await _get('/storage/$casketId', const Duration(seconds: 125));
 
     if (response.statusCode != 200) {
       throw _errorFromResponse(response, 'Failed to fetch casket contents');
@@ -145,9 +149,7 @@ class StorageService {
   /// Fetch float values for inventory items from the GC.
   /// Returns a map of marketHashName → list of float data.
   Future<Map<String, List<FloatData>>> getInventoryFloats() async {
-    final response = await http
-        .get(Uri.parse('$baseUrl/inventory/floats'), headers: _headers)
-        .timeout(const Duration(seconds: 30));
+    final response = await _get('/inventory/floats', const Duration(seconds: 30));
 
     if (response.statusCode != 200) {
       throw _errorFromResponse(response, 'Failed to fetch inventory floats');
@@ -199,6 +201,9 @@ class StorageStatus {
   final bool steamConnected;
   final bool gcConnected;
   final String displayName;
+  /// SteamID64 of the account the VM is logged in to (null on older
+  /// servers). Floats are only applied to that account's inventory.
+  final String? steamId;
   /// True when the VM responded with 401 (wrong/missing API key). Lets
   /// the UI show a distinct message instead of generic "unreachable".
   final bool unauthorized;
@@ -208,6 +213,7 @@ class StorageStatus {
     this.steamConnected = false,
     this.gcConnected = false,
     this.displayName = '',
+    this.steamId,
     this.unauthorized = false,
   });
 

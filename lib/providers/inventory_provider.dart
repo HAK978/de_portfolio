@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/cs2_item.dart';
 import '../models/storage_unit.dart';
 import '../services/steam_api_service.dart';
+import '../services/storage_service.dart' show FloatData;
 import 'auth_provider.dart'; // for firestoreServiceProvider
 import 'storage_provider.dart';
 
@@ -382,31 +383,29 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     }
   }
 
-  /// Fetches float values for inventory items from the GC service.
-  /// Merges floats into existing items and persists to cache.
+  /// Fetches float values from the storage VM and merges them into the
+  /// loaded inventory, then persists to cache.
+  ///
+  /// The VM reads floats from the inventory of the Steam account it's
+  /// logged in to, so they're only applied when that's the account being
+  /// viewed; otherwise any items sharing a name would get its floats.
   Future<void> fetchInventoryFloats() async {
-    final items = state.when(
-      data: (items) => items,
-      loading: () => null,
-      error: (_, _) => null,
-    );
-    if (items == null || items.isEmpty) return;
+    final steamId = ref.read(steamIdProvider);
+    if (steamId.isEmpty || (state.asData?.value.isEmpty ?? true)) return;
 
     try {
       final service = ref.read(storageServiceProvider);
+      final status = await service.getStatus();
+      if (status.steamId != steamId) return;
       final floatsMap = await service.getInventoryFloats();
 
-      final updatedItems = items.map((item) {
-        final floats = floatsMap[item.marketHashName];
-        if (floats == null || floats.isEmpty) return item;
+      // Merge into the state as it is now (prices may have changed during
+      // the awaits) and drop the result if the user switched accounts.
+      if (!ref.mounted || ref.read(steamIdProvider) != steamId) return;
+      final current = state.asData?.value;
+      if (current == null) return;
 
-        final sortedFloats = floats.map((f) => f.floatValue).toList()..sort();
-        return item.copyWith(
-          floatValue: sortedFloats.first,
-          individualFloats: sortedFloats,
-        );
-      }).toList();
-
+      final updatedItems = applyGcFloats(current, floatsMap);
       state = AsyncValue.data(updatedItems);
       _updateCache(updatedItems);
     } catch (e) {
@@ -431,6 +430,21 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
       state = AsyncValue.error(e, stack);
     }
   }
+}
+
+/// Merges Game Coordinator floats (keyed by market hash name) into
+/// [items]. A stack of identical items gets every copy's float, sorted,
+/// and shows the best (lowest) one as its [CS2Item.floatValue].
+List<CS2Item> applyGcFloats(
+  List<CS2Item> items,
+  Map<String, List<FloatData>> floatsByName,
+) {
+  return items.map((item) {
+    final floats = floatsByName[item.marketHashName];
+    if (floats == null || floats.isEmpty) return item;
+    final sorted = floats.map((f) => f.floatValue).toList()..sort();
+    return item.copyWith(floatValue: sorted.first, individualFloats: sorted);
+  }).toList();
 }
 
 /// Provides only items in the main inventory (not in storage units).
