@@ -5,18 +5,22 @@ rules_version = '2';
 // These rules control who can read/write data. Firebase Auth
 // provides the user's identity (request.auth.uid = their steamId).
 //
-// Key concept: rules cascade DOWN — if a parent allows access,
-// children inherit it. So be specific at each level.
+// Firestore rules do NOT cascade: a rule on a document says nothing
+// about its subcollections, so each level gets its own match. Anything
+// not matched below is denied. Tests: functions/test/rules.emulator.test.js
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Old tokens minted from an unverified Steam ID cannot access cloud data.
+    // Tokens minted by the old, unverified login flow lack this claim and
+    // get no access to cloud data.
     function verifiedUser() {
       return request.auth != null && request.auth.token.steamVerified == true;
     }
 
-
-    // steamLoginSessions is server-only: no client access rule.
+    // Server-only collections, written by Cloud Functions (Admin SDK)
+    // and denied to every client by omission:
+    //   steamLoginSessions — one-time Steam login challenges (TTL-deleted)
+    //   priceHistory       — hourly price samples behind the % changes
 
     // User profiles — users can only read/write their own
     match /users/{steamId} {
@@ -27,7 +31,7 @@ service cloud.firestore {
     match /inventories/{steamId} {
       allow read, write: if verifiedUser() && request.auth.uid == steamId;
 
-      // Items subcollection inherits the same rule
+      // The items subcollection needs its own rule (rules don't cascade)
       match /items/{itemId} {
         allow read, write: if verifiedUser() && request.auth.uid == steamId;
       }

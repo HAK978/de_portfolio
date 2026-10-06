@@ -36,6 +36,27 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  firebase-emulator:
+    name: Firestore rules + login flow (emulators)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21' # the Firestore emulator runs on the JVM
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - run: npm ci
+      - run: npm install --global firebase-tools@15
+      - run: npm run test:emulator
+
   storage-service:
     name: storage-service tests
     runs-on: ubuntu-latest

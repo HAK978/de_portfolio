@@ -4,6 +4,7 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
 import {LOGIN_TTL_MS, newSteamLogin, sessionKey, verifySteamAssertion} from "./steamAuth";
 import {updatePriceHistory} from "./priceHistory";
+import {orderAfterCursor} from "./cursor";
 
 admin.initializeApp();
 
@@ -147,13 +148,31 @@ export const createCustomToken = onCall(
   },
 );
 
-/** Refresh prices every four hours and compare timestamped observations. */
+/**
+ * Server-side price refresh, every 4 hours.
+ *
+ * `prices/{id}` is the watch list (every item the app has priced) and
+ * the small document the app downloads: current Steam + CSFloat prices
+ * and the 24h / 7d / 30d changes. For each document this:
+ *   1. Fetches Steam Market and CSFloat prices concurrently.
+ *   2. Appends the Steam price to `priceHistory/{id}`, a server-only
+ *      document of hourly samples (31 days max), and derives the changes
+ *      from it (see priceHistory.ts). History lives in its own collection
+ *      so the app's full read of `prices` stays small.
+ *   3. Stamps `meta/priceRefresh` with the run time, counts and a cursor.
+ *
+ * Items are processed serially with a ~2s gap to respect Steam Market's
+ * rate limit. A wall-clock budget stops the run before the timeout, and
+ * the next run resumes after the last attempted item (see cursor.ts).
+ *
+ * Requires the Blaze plan (Cloud Scheduler) and the CSFLOAT_API_KEY secret.
+ */
 export const updatePriceChanges = onSchedule(
   {
     schedule: "every 4 hours",
     timeZone: "Etc/UTC",
     // ~200 items at ~2.9s each is ~575s; 900s leaves headroom so the
-    // whole watch list refreshes in one run (no permanently-stale tail).
+    // whole watch list usually refreshes in one run.
     timeoutSeconds: 900,
     memory: "256MiB",
     secrets: [csfloatApiKey],
@@ -178,23 +197,21 @@ export const updatePriceChanges = onSchedule(
     let skipped = 0;
     let unreached = 0;
 
-    // Resume after the last attempted document so a large watch list cannot
-    // permanently starve the same tail when the invocation hits its budget.
     const metaRef = db.collection("meta").doc("priceRefresh");
     const cursor = (await metaRef.get()).data()?.cursor;
-    const docs = [...snapshot.docs].sort((a, b) => a.id.localeCompare(b.id));
-    const after = typeof cursor === "string" ? docs.findIndex((d) => d.id.localeCompare(cursor) > 0) : 0;
-    const start = after < 0 ? 0 : after;
-    const ordered = [...docs.slice(start), ...docs.slice(0, start)];
-    let lastAttempted = cursor ?? null;
-    for (const doc of ordered) {
+    const docsById = new Map(snapshot.docs.map((doc) => [doc.id, doc]));
+    const ordered = orderAfterCursor([...docsById.keys()], cursor);
+    let lastAttempted: string | null = typeof cursor === "string" ? cursor : null;
+
+    for (const id of ordered) {
       if (Date.now() - startMs > TIME_BUDGET_MS) {
         unreached = snapshot.size - (updated + skipped);
         console.log(`updatePriceChanges: time budget hit, ${unreached} unreached`);
         break;
       }
 
-      lastAttempted = doc.id;
+      lastAttempted = id;
+      const doc = docsById.get(id)!;
       const data = doc.data();
       const name = typeof data.marketHashName === "string" ?
         data.marketHashName : null;
@@ -214,17 +231,34 @@ export const updatePriceChanges = onSchedule(
         continue;
       }
 
+      const {FieldValue} = admin.firestore;
       const update: Record<string, unknown> = {
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-        priceChangeComputedAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastUpdated: FieldValue.serverTimestamp(),
+        priceChangeComputedAt: FieldValue.serverTimestamp(),
       };
+      const batch = db.batch();
 
       if (steamPrice !== null) {
-        update.currentPrice = steamPrice;
-        const nowMs = Date.now();
+        const historyRef = db.collection("priceHistory").doc(id);
+        const history = (await historyRef.get()).data();
+        const result = updatePriceHistory(history?.samples, steamPrice, Date.now());
 
-        Object.assign(update, updatePriceHistory(data.priceHistory, steamPrice, nowMs));
+        update.currentPrice = steamPrice;
+        update.priceChange24h = result.priceChange24h;
+        update.priceChange7d = result.priceChange7d;
+        update.priceChange30d = result.priceChange30d;
         update.priceHistoryVersion = 2;
+        // Fields from the old rolling-baseline scheme, no longer used.
+        for (const field of ["previousPrice24h", "baselineTakenAt",
+          "previousPrice7d", "baseline7dTakenAt",
+          "previousPrice30d", "baseline30dTakenAt"]) {
+          update[field] = FieldValue.delete();
+        }
+        batch.set(historyRef, {
+          marketHashName: name,
+          samples: result.priceHistory,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
         steamOk++;
       }
       if (csfloatPrice !== null) {
@@ -232,7 +266,8 @@ export const updatePriceChanges = onSchedule(
         csfloatOk++;
       }
 
-      await doc.ref.set(update, {merge: true});
+      batch.set(doc.ref, update, {merge: true});
+      await batch.commit();
       updated++;
 
       // Pace to respect Steam Market's rate limit.
@@ -240,7 +275,7 @@ export const updatePriceChanges = onSchedule(
     }
 
     // Stamp the run so the app can show a real "prices updated at" time.
-    await db.collection("meta").doc("priceRefresh").set({
+    await metaRef.set({
       lastRun: admin.firestore.FieldValue.serverTimestamp(),
       updated,
       steamOk,

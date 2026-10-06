@@ -5,7 +5,8 @@
     "build": "tsc",
     "serve": "npm run build && firebase emulators:start --only functions",
     "deploy": "firebase deploy --only functions",
-    "test": "npm run build && node --test test/*.test.js"
+    "test": "npm run build && node --test \"test/*.test.js\"",
+    "test:emulator": "npm run build && firebase emulators:exec --only firestore,auth --project demo-cs2-portfolio \"node --test --test-concurrency=1 test/emulator/*.test.js\""
   },
   "engines": {
     "node": "22"
@@ -16,6 +17,8 @@
     "firebase-functions": "^6.0.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "firebase": "^12.19.0",
     "typescript": "^5.4.0"
   },
   "private": true
