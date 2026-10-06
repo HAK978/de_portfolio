@@ -35,6 +35,8 @@ class InventoryFetchProgress {
 /// The API returns max ~75 items per request, so we paginate using
 /// the `last_assetid` cursor.
 class SteamApiService {
+  SteamApiService({http.Client? client}) : _client = client;
+  final http.Client? _client;
   static const _baseUrl = 'https://steamcommunity.com/inventory';
   static const _imageBase =
       'https://community.cloudflare.steamstatic.com/economy/image/';
@@ -84,7 +86,8 @@ class SteamApiService {
         '${cursor != null ? '&start_assetid=$cursor' : ''}',
       );
 
-      final response = await http.get(uri);
+      final response = await (_client?.get(uri) ?? http.get(uri))
+          .timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 429) {
         consecutive429s++;
@@ -149,7 +152,11 @@ class SteamApiService {
       ));
 
       if (hasMore) {
-        cursor = data['last_assetid'] as String?;
+        final next = data['last_assetid'] as String?;
+        if (next == null || next.isEmpty || next == cursor) {
+          throw const FormatException('Steam returned an invalid inventory page cursor.');
+        }
+        cursor = next;
         // Rate limit: wait between requests
         await Future.delayed(const Duration(milliseconds: 1100));
       }
@@ -178,7 +185,9 @@ class SteamApiService {
     for (final asset in assets) {
       final key = '${asset['classid']}_${asset['instanceid']}';
       final desc = descriptions[key];
-      if (desc == null) continue;
+      if (desc == null) {
+        throw const FormatException('Steam returned incomplete item descriptions. Please refresh again.');
+      }
 
       final hashName = desc['market_hash_name'] as String? ?? desc['name'] as String;
       final amount = int.tryParse(asset['amount']?.toString() ?? '1') ?? 1;
@@ -188,7 +197,6 @@ class SteamApiService {
 
     // Build CS2Item for each unique item
     final items = <CS2Item>[];
-    var idCounter = 0;
 
     for (final entry in descriptionForHash.entries) {
       final hashName = entry.key;
@@ -196,7 +204,8 @@ class SteamApiService {
       final quantity = quantityMap[hashName] ?? 1;
 
       items.add(_parseItem(
-        id: (idCounter++).toString(),
+        // A group keeps its identity when Steam returns assets in a new order.
+        id: base64UrlEncode(utf8.encode(hashName)).replaceAll('=', ''),
         desc: desc,
         quantity: quantity,
       ));

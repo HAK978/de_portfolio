@@ -155,7 +155,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
 
     // Try loading from local cache first
     final cached = await service.loadInventoryCache(steamId);
-    if (cached != null && cached.isNotEmpty) {
+    if (cached != null) {
       debugPrint('Loaded ${cached.length} items from local cache');
       return cached;
     }
@@ -200,7 +200,7 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
         return oldCache ?? [];
       }
       debugPrint('Fetched ${items.length} items from Steam');
-      _syncToFirestore(steamId, items);
+      _syncToFirestore(steamId, items, removeMissing: true);
       // Auto-fetch floats from GC in the background after inventory loads
       Future.microtask(() => fetchInventoryFloats());
       return items;
@@ -373,10 +373,10 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
 
   /// Pushes inventory to Firestore in the background.
   /// Fire-and-forget — failures are logged but don't block the UI.
-  Future<void> _syncToFirestore(String steamId, List<CS2Item> items) async {
+  Future<void> _syncToFirestore(String steamId, List<CS2Item> items, {bool removeMissing = false}) async {
     try {
       final firestore = ref.read(firestoreServiceProvider);
-      await firestore.saveInventory(steamId, items);
+      await firestore.saveInventory(steamId, items, removeMissing: removeMissing);
     } catch (e) {
       debugPrint('Firestore sync failed: $e');
     }

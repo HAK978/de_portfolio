@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/cs2_item.dart';
+import 'inventory_sync.dart';
 
 /// Handles all Firestore read/write operations.
 ///
@@ -55,9 +56,8 @@ class ServerPriceData {
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  /// Tracks the last-synced price per item so we only write changes.
-  /// Key: item id, Value: "steamPrice|csfloatPrice"
-  final Map<String, String> _lastSyncedPrices = {};
+  late final InventorySynchronizer _inventorySync =
+      InventorySynchronizer(_FirestoreInventoryStore(_db));
 
   /// If true, skip all writes until the app restarts.
   /// Set when we get RESOURCE_EXHAUSTED from Firestore.
@@ -102,106 +102,37 @@ class FirestoreService {
 
   // ── Inventory ─────────────────────────────────────────────
 
-  /// Saves inventory to Firestore, but only items whose prices changed.
-  ///
-  /// On first sync (empty _lastSyncedPrices), writes everything.
-  /// On subsequent syncs, compares each item's prices to last sync
-  /// and only writes the diff. This keeps writes low for the free tier.
-  Future<void> saveInventory(String steamId, List<CS2Item> items) async {
-    if (!isAuthenticated) {
-      debugPrint('saveInventory: skipping — not authenticated');
-      _setSyncState(const SyncState(status: SyncStatus.error, message: 'Not signed in'));
+  /// Only a complete Steam response may remove missing cloud items.
+  Future<void> saveInventory(
+    String steamId,
+    List<CS2Item> items, {
+    bool removeMissing = false,
+  }) async {
+    if (FirebaseAuth.instance.currentUser?.uid != steamId) {
+      _setSyncState(const SyncState(status: SyncStatus.error, message: 'Sign in to this Steam account to sync'));
       return;
     }
     if (_quotaExhausted) {
-      debugPrint('saveInventory: skipping — quota exhausted');
       _setSyncState(const SyncState(status: SyncStatus.error, message: 'Quota exhausted'));
       return;
     }
-
-    // Find items that actually changed since last sync
-    final changedItems = <CS2Item>[];
-    final isFirstSync = _lastSyncedPrices.isEmpty;
-
-    for (final item in items) {
-      final priceKey = _priceKey(item);
-      if (_lastSyncedPrices[item.id] != priceKey) {
-        changedItems.add(item);
+    _setSyncState(const SyncState(status: SyncStatus.syncing, message: 'inventory'));
+    try {
+      await _inventorySync.save(steamId, items, removeMissing: removeMissing);
+      _setSyncState(SyncState(
+        status: SyncStatus.success,
+        message: 'Inventory synced',
+        lastSyncTime: DateTime.now(),
+      ));
+    } catch (e) {
+      if (e is FirebaseException && e.code == 'resource-exhausted') {
+        _quotaExhausted = true;
       }
-    }
-
-    if (changedItems.isEmpty) {
-      debugPrint('saveInventory: no changes to sync');
-      return;
-    }
-
-    debugPrint('saveInventory: ${changedItems.length}/${items.length} items changed'
-        '${isFirstSync ? " (first sync)" : ""}');
-    _setSyncState(SyncState(status: SyncStatus.syncing, message: '${changedItems.length} items'));
-
-    final collectionRef = _db
-        .collection('inventories')
-        .doc(steamId)
-        .collection('items');
-
-    // Write in batches of 50
-    const batchSize = 50;
-    int written = 0;
-
-    for (int i = 0; i < changedItems.length; i += batchSize) {
-      final batch = _db.batch();
-      final end = (i + batchSize).clamp(0, changedItems.length);
-      final chunk = changedItems.sublist(i, end);
-
-      for (final item in chunk) {
-        final docRef = collectionRef.doc(item.id);
-        batch.set(docRef, item.toJson());
-      }
-
-      final batchNum = i ~/ batchSize + 1;
-      try {
-        await _commitWithRetry(batch, batchNum);
-        written += chunk.length;
-        debugPrint('saveInventory: batch $batchNum committed (${chunk.length} items)');
-
-        // Update tracked prices for successfully written items
-        for (final item in chunk) {
-          _lastSyncedPrices[item.id] = _priceKey(item);
-        }
-      } catch (e) {
-        final msg = e.toString();
-        if (msg.contains('RESOURCE_EXHAUSTED') || msg.contains('Quota exceeded')) {
-          debugPrint('saveInventory: QUOTA EXHAUSTED — disabling Firestore writes');
-          _quotaExhausted = true;
-          _setSyncState(const SyncState(status: SyncStatus.error, message: 'Quota exhausted'));
-          return;
-        }
-        if (msg.contains('PERMISSION_DENIED')) {
-          debugPrint('saveInventory: PERMISSION DENIED — not signed in to Firebase?');
-          _setSyncState(const SyncState(status: SyncStatus.error, message: 'Permission denied'));
-          return;
-        }
-        debugPrint('saveInventory: batch $batchNum FAILED — $e');
-      }
-    }
-
-    // Update metadata only if we wrote something
-    if (written > 0) {
-      try {
-        await _db.collection('inventories').doc(steamId).set({
-          'itemCount': items.length,
-          'lastSync': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
-        debugPrint('saveInventory: DONE ($written items written)');
-        _setSyncState(SyncState(
-          status: SyncStatus.success,
-          message: '$written items synced',
-          lastSyncTime: DateTime.now(),
-        ));
-      } catch (e) {
-        debugPrint('saveInventory: lastSync write failed — $e');
-        _setSyncState(SyncState(status: SyncStatus.error, message: e.toString()));
-      }
+      _setSyncState(SyncState(
+        status: SyncStatus.error,
+        message: 'Inventory sync incomplete. Retry to finish.',
+      ));
+      debugPrint('Inventory sync failed: $e');
     }
   }
 
@@ -216,11 +147,6 @@ class FirestoreService {
     final items = snapshot.docs
         .map((doc) => CS2Item.fromJson(doc.data()))
         .toList();
-
-    // Populate last-synced prices so next sync only writes changes
-    for (final item in items) {
-      _lastSyncedPrices[item.id] = _priceKey(item);
-    }
 
     return items;
   }
@@ -386,26 +312,46 @@ class FirestoreService {
 
   // ── Retry Logic ─────────────────────────────────────────
 
-  /// Commits a Firestore batch with one retry on timeout.
-  Future<void> _commitWithRetry(WriteBatch batch, int batchNum) async {
-    try {
-      await batch.commit().timeout(const Duration(seconds: 30));
-    } on TimeoutException {
-      debugPrint('saveInventory: batch $batchNum timed out, retrying...');
-      await Future.delayed(const Duration(seconds: 5));
-      await batch.commit().timeout(const Duration(seconds: 30));
-    }
-  }
-
-  // ── Helpers ───────────────────────────────────────────────
-
   /// Firestore doc IDs can't contain forward slashes.
   String _sanitizeDocId(String name) {
     return name.replaceAll('/', '_');
   }
 
-  /// Creates a string key from an item's prices for change detection.
-  String _priceKey(CS2Item item) {
-    return '${item.currentPrice}|${item.csfloatPrice ?? 0}';
+}
+
+class _FirestoreInventoryStore implements InventorySyncStore {
+  _FirestoreInventoryStore(this.db);
+  final FirebaseFirestore db;
+
+  CollectionReference<Map<String, dynamic>> _items(String steamId) =>
+      db.collection('inventories').doc(steamId).collection('items');
+
+  @override
+  Future<Map<String, CS2Item>> load(String steamId) async {
+    // Reconciliation must use server data; an offline cache can omit documents.
+    final snapshot = await _items(steamId).get(const GetOptions(source: Source.server));
+    return {for (final doc in snapshot.docs) doc.id: CS2Item.fromJson(doc.data())};
+  }
+
+  @override
+  Future<void> writeBatch(String steamId, Map<String, CS2Item> updates, List<String> deletions) async {
+    final batch = db.batch();
+    for (final entry in updates.entries) {
+      batch.set(_items(steamId).doc(entry.key), entry.value.toJson());
+    }
+    for (final id in deletions) {
+      batch.delete(_items(steamId).doc(id));
+    }
+    // Await actual completion. A timeout does not cancel a Firestore write and
+    // would let a stale write arrive after the next queued snapshot.
+    await batch.commit();
+  }
+
+  @override
+  Future<void> writeMetadata(String steamId, int itemCount) async {
+    await db.collection('inventories').doc(steamId).set({
+      'itemCount': itemCount,
+      'lastSync': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 }
