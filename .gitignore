@@ -63,7 +63,9 @@ storage_api_key.txt
 functions/node_modules/
 functions/lib/
 storage-service/node_modules/
-storage-service/.refresh_token
+# Secrets on the storage VM (API key, Steam refresh token and its backups)
+storage-service/.env
+storage-service/.refresh_token*
 .flutter-plugins
 .flutter-plugins-dependencies
 .dart_tool/
