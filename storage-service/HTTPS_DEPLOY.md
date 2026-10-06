@@ -96,10 +96,16 @@ with whatever domain you pointed at the IP in step 2:
 ```bash
 sudo tee /etc/caddy/Caddyfile > /dev/null <<'EOF'
 cs2-storage-yourname.duckdns.org {
-    # Forward all requests to the existing Express service on
-    # localhost:3456. Caddy handles TLS termination automatically
-    # (Let's Encrypt cert auto-issued + auto-renewed).
-    reverse_proxy localhost:3456
+    # /metrics is for the local Alloy scraper only (localhost:3456) —
+    # block it from the public internet so operational metrics aren't
+    # exposed. Everything else is proxied to the Express service; Caddy
+    # handles TLS termination (Let's Encrypt cert auto-issued + renewed).
+    handle /metrics {
+        respond 404
+    }
+    handle {
+        reverse_proxy localhost:3456
+    }
 }
 EOF
 ```

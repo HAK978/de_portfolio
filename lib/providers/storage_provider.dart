@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
@@ -60,11 +61,19 @@ final storageApiKeyProvider = NotifierProvider<StorageApiKeyNotifier, String>(
   StorageApiKeyNotifier.new,
 );
 
+/// Stores the storage-service API key in encrypted storage (Android
+/// Keystore / iOS Keychain) instead of a plaintext file. This key grants
+/// access to the GCE VM (and thus the owner's Steam storage), so it gets
+/// the same protection as the CSFloat key. Includes a one-time migration
+/// from the legacy `storage_api_key.txt` file.
 class StorageApiKeyNotifier extends Notifier<String> {
   static const _fileName = 'storage_api_key.txt';
+  static const _secureStorageKey = 'storage_api_key';
+  static const _storage = FlutterSecureStorage();
 
   @override
   String build() {
+    ref.keepAlive();
     _loadSaved();
     return '';
   }
@@ -76,11 +85,28 @@ class StorageApiKeyNotifier extends Notifier<String> {
 
   Future<void> _loadSaved() async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      if (file.existsSync()) {
-        final key = await file.readAsString();
-        if (key.trim().isNotEmpty) state = key.trim();
+      // Prefer the encrypted entry; fall back to the legacy plaintext
+      // file once (migrate + delete it) after upgrading from an older build.
+      var key = await _storage.read(key: _secureStorageKey);
+
+      if (key == null || key.isEmpty) {
+        final dir = await getApplicationDocumentsDirectory();
+        final legacyFile = File('${dir.path}/$_fileName');
+        if (legacyFile.existsSync()) {
+          final legacyKey = (await legacyFile.readAsString()).trim();
+          if (legacyKey.isNotEmpty) {
+            await _storage.write(key: _secureStorageKey, value: legacyKey);
+            key = legacyKey;
+            debugPrint('Migrated storage API key from plaintext file → secure storage');
+          }
+          try {
+            await legacyFile.delete();
+          } catch (_) {}
+        }
+      }
+
+      if (key != null && key.isNotEmpty && state.isEmpty) {
+        state = key;
       }
     } catch (e) {
       debugPrint('Error loading storage API key: $e');
@@ -89,9 +115,11 @@ class StorageApiKeyNotifier extends Notifier<String> {
 
   Future<void> _save(String key) async {
     try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      await file.writeAsString(key);
+      if (key.isEmpty) {
+        await _storage.delete(key: _secureStorageKey);
+      } else {
+        await _storage.write(key: _secureStorageKey, value: key);
+      }
     } catch (e) {
       debugPrint('Error saving storage API key: $e');
     }

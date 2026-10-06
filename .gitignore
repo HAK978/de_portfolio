@@ -58,6 +58,7 @@ polish_backlog.md
 audit_findings.md
 audit_proposed_fixes.md
 appcheck_debug_token.txt
+storage_api_key.txt
 .claude/
 functions/node_modules/
 functions/lib/

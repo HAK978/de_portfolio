@@ -5,6 +5,7 @@ const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
 const ItemResolver = require('./itemResolver');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const readline = require('readline');
 const metrics = require('./metrics');
 
@@ -48,10 +49,18 @@ const TOKEN_FILE = path.join(__dirname, '.refresh_token');
 
 // ── API key auth middleware ───────────────────────────────
 // Only enforced if API_KEY env var is set. Skipped for local dev.
+// Constant-time comparison so the check can't leak the key via timing.
+function safeKeyEqual(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 if (API_KEY) {
   app.use((req, res, next) => {
-    const key = req.headers['x-api-key'];
-    if (key !== API_KEY) {
+    if (!safeKeyEqual(req.headers['x-api-key'], API_KEY)) {
       return res.status(401).json({ error: 'Invalid or missing API key' });
     }
     next();
@@ -514,9 +523,17 @@ app.get('/inspect', async (req, res) => {
     return res.status(503).json({ error: err.message });
   }
 
-  const inspectLink = req.query.url;
+  const inspectLink =
+    typeof req.query.url === 'string' ? req.query.url.trim() : '';
   if (!inspectLink) {
     return res.status(400).json({ error: 'Missing ?url= parameter with inspect link' });
+  }
+  // Only accept genuine CS2 inspect links — this feeds the Game
+  // Coordinator using the VM's Steam session, so never pass arbitrary input.
+  const INSPECT_RE =
+    /^steam:\/\/rungame\/730\/\d+\/\+csgo_econ_action_preview\s+[SM]\d+A\d+D\d+$/;
+  if (inspectLink.length > 200 || !INSPECT_RE.test(inspectLink)) {
+    return res.status(400).json({ error: 'Invalid CS2 inspect link' });
   }
 
   try {
