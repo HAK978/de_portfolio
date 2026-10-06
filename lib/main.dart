@@ -33,20 +33,23 @@ void callbackDispatcher() {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Wakelock is now scoped to active price fetches (see CS2PortfolioApp
-  // below) instead of staying on for the whole app session, which was
-  // burning battery while the user just browsed.
-
-  // Register the 3-hour background price refresh
-  await Workmanager().initialize(callbackDispatcher);
-  await Workmanager().registerPeriodicTask(
-    'cs2-price-refresh',
-    'priceRefreshTask',
-    frequency: const Duration(hours: 3),
-    initialDelay: _delayUntilNextSlot(),
-    constraints: Constraints(networkType: NetworkType.connected),
-    existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
-  );
+  // Android is the only platform with background scheduling configured.
+  // A plugin failure must not prevent the foreground application from opening.
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    try {
+      await Workmanager().initialize(callbackDispatcher);
+      await Workmanager().registerPeriodicTask(
+        'cs2-price-refresh',
+        'priceRefreshTask',
+        frequency: const Duration(hours: 3),
+        initialDelay: _delayUntilNextSlot(),
+        constraints: Constraints(networkType: NetworkType.connected),
+        existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
+      );
+    } catch (e) {
+      debugPrint('Background price refresh unavailable: $e');
+    }
+  }
 
   // Initialize Firebase — wrapped in try/catch so the app works
   // even if Firebase isn't configured yet. Once you run
