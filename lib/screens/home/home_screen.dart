@@ -42,18 +42,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       MaterialPageRoute(builder: (_) => const SteamLoginScreen()),
     );
 
-    if (result == null) return;
+    if (result == null || !context.mounted) return;
 
     if (result.steamId.isNotEmpty) {
       ref.read(steamIdProvider.notifier).set(result.steamId);
-      // Sign in to Firebase so Firestore writes are authenticated
-      ref.read(authProvider.notifier).signInWithSteamId(result.steamId);
     }
 
-    if (result.steamLoginCookie != null &&
-        result.steamLoginCookie!.isNotEmpty) {
-      ref.read(steamLoginCookieProvider.notifier).set(result.steamLoginCookie!);
-    }
+    ref.read(steamLoginCookieProvider.notifier).set(result.steamLoginCookie ?? '');
   }
 
   @override

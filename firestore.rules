@@ -10,19 +10,26 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Old tokens minted from an unverified Steam ID cannot access cloud data.
+    function verifiedUser() {
+      return request.auth != null && request.auth.token.steamVerified == true;
+    }
+
+
+    // steamLoginSessions is server-only: no client access rule.
 
     // User profiles — users can only read/write their own
     match /users/{steamId} {
-      allow read, write: if request.auth != null && request.auth.uid == steamId;
+      allow read, write: if verifiedUser() && request.auth.uid == steamId;
     }
 
     // Inventories — users can only access their own inventory
     match /inventories/{steamId} {
-      allow read, write: if request.auth != null && request.auth.uid == steamId;
+      allow read, write: if verifiedUser() && request.auth.uid == steamId;
 
       // Items subcollection inherits the same rule
       match /items/{itemId} {
-        allow read, write: if request.auth != null && request.auth.uid == steamId;
+        allow read, write: if verifiedUser() && request.auth.uid == steamId;
       }
     }
 
@@ -30,23 +37,26 @@ service cloud.firestore {
     // Client writes allowed only from the app owner's account.
     // Cloud Functions use Admin SDK which bypasses rules entirely.
     match /prices/{priceId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null
+      allow read: if verifiedUser();
+      allow write: if verifiedUser()
         && request.auth.uid == '76561198369694237';
     }
 
     // Server metadata (e.g. priceRefresh.lastRun) — any authenticated
     // user can read; only Cloud Functions (Admin SDK) write it.
     match /meta/{docId} {
-      allow read: if request.auth != null;
+      allow read: if verifiedUser();
       allow write: if false;
     }
 
     // Alerts — users can only manage their own alerts
     match /alerts/{alertId} {
-      allow read, write: if request.auth != null
+      allow read, delete: if verifiedUser()
         && resource.data.steamId == request.auth.uid;
-      allow create: if request.auth != null
+      allow update: if verifiedUser()
+        && resource.data.steamId == request.auth.uid
+        && request.resource.data.steamId == request.auth.uid;
+      allow create: if verifiedUser()
         && request.resource.data.steamId == request.auth.uid;
     }
   }

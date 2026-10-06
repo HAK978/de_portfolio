@@ -1,288 +1,155 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-/// Result returned after a successful Steam login.
+import '../../models/steam_login_session.dart';
+import '../../providers/auth_provider.dart';
+
+/// Returned only after Steam verification and Firebase sign-in both succeed.
 class SteamLoginResult {
   final String steamId;
   final String? steamLoginCookie;
-
-  const SteamLoginResult({
-    required this.steamId,
-    this.steamLoginCookie,
-  });
+  const SteamLoginResult({required this.steamId, this.steamLoginCookie});
 }
 
-class SteamLoginScreen extends StatefulWidget {
+class SteamLoginScreen extends ConsumerStatefulWidget {
   const SteamLoginScreen({super.key});
-
   @override
-  State<SteamLoginScreen> createState() => _SteamLoginScreenState();
+  ConsumerState<SteamLoginScreen> createState() => _SteamLoginScreenState();
 }
 
-class _SteamLoginScreenState extends State<SteamLoginScreen>
-    with WidgetsBindingObserver {
-  late final WebViewController _controller;
-  bool _isLoading = true;
-  bool _wasBackgrounded = false;
-  bool _navigatedToProfile = false; // true after we redirect to steamcommunity
-  bool _popped = false; // true after Navigator.pop() called — prevents double-pop
+class _SteamLoginScreenState extends ConsumerState<SteamLoginScreen> {
+  WebViewController? _controller;
+  SteamLoginSession? _session;
+  bool _loading = true;
+  bool _verifying = false;
+  String? _error;
+  static const _cookieChannel = MethodChannel('com.deportfolio/cookies');
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
+    _startLogin();
+  }
 
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: (req) {
-            // Defense-in-depth: only allow navigation to Steam-owned
-            // hosts. The login URL goes through these legitimately
-            // (steamcommunity.com → store.steampowered.com on Guard,
-            // login.steampowered.com for some flows). Anything else
-            // — phishing, malicious iframe, hijacked redirect — is
-            // refused.
-            final host = Uri.tryParse(req.url)?.host ?? '';
-            const allowed = [
-              'steamcommunity.com',
-              'store.steampowered.com',
-              'login.steampowered.com',
-              'help.steampowered.com',
-              'steampowered.com',
-              'akamaihd.net', // Steam's CDN for assets
-              'cloudflare.steamstatic.com', // Steam image CDN
-            ];
-            final ok = allowed.any((d) => host == d || host.endsWith('.$d'));
-            if (!ok) {
-              debugPrint('BLOCKED off-Steam navigation: ${req.url}');
+  Future<void> _startLogin() async {
+    setState(() {
+      _error = null;
+      _loading = true;
+      _controller = null;
+      _session = null;
+    });
+    try {
+      final session = await ref.read(authProvider.notifier).beginSteamLogin();
+      if (!mounted) return;
+      _session = session;
+      final controller = WebViewController()
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setNavigationDelegate(NavigationDelegate(
+          onNavigationRequest: (request) {
+            final uri = Uri.tryParse(request.url);
+            if (uri == null) return NavigationDecision.prevent;
+            if (session.isCallback(uri)) {
+              if (request.isMainFrame) _finishLogin(uri);
               return NavigationDecision.prevent;
             }
-            return NavigationDecision.navigate;
+            const hosts = ['steamcommunity.com', 'steampowered.com', 'steamstatic.com', 'akamaihd.net'];
+            final allowed = uri.scheme == 'https' && hosts.any(
+              (host) => uri.host == host || uri.host.endsWith('.$host'),
+            );
+            return allowed ? NavigationDecision.navigate : NavigationDecision.prevent;
           },
-          onPageStarted: (url) {
-            debugPrint('STARTED: $url');
-            if (mounted) setState(() => _isLoading = true);
+          onPageStarted: (_) {
+            if (mounted) setState(() => _loading = true);
           },
-          onPageFinished: (url) {
-            debugPrint('FINISHED: $url');
-            if (mounted) setState(() => _isLoading = false);
-            _checkForLogin(url);
+          onPageFinished: (_) {
+            if (mounted && !_verifying) setState(() => _loading = false);
           },
-          onWebResourceError: (e) {
-            debugPrint('ERROR: ${e.description}');
+          onWebResourceError: (error) {
+            if (mounted && error.isForMainFrame == true) {
+              setState(() {
+                _error = 'Steam could not load. Check your connection and try again.';
+                _loading = false;
+              });
+            }
           },
-        ),
-      )
-      ..loadRequest(Uri.parse(
-        // Login at steamcommunity.com so cookies are set for that domain
-        // directly. Using store.steampowered.com caused a cross-domain
-        // cookie gap after clearCookies() (sign-out), where steamcommunity.com
-        // was unauthenticated and extraction silently failed.
-        'https://steamcommunity.com/login/home/?goto=my/profile',
-      ));
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused) {
-      _wasBackgrounded = true;
-    }
-    if (state == AppLifecycleState.resumed && _wasBackgrounded) {
-      _wasBackgrounded = false;
-      _onResumedFromBackground();
-    }
-  }
-
-  /// Check current URL when returning from background.
-  /// Only extract if the WebView already redirected past the login page.
-  /// If still on the login/guard page, do nothing — let the user continue.
-  Future<void> _onResumedFromBackground() async {
-    await Future.delayed(const Duration(milliseconds: 500));
-    final url = await _controller.currentUrl() ?? '';
-    debugPrint('Resumed, current URL: $url');
-
-    if (!url.contains('/login') && !url.contains('/signin') &&
-        (url.contains('steampowered.com') || url.contains('steamcommunity.com'))) {
-      debugPrint('Past login on resume, going to profile...');
-      _goToProfileAndExtract();
-    } else {
-      debugPrint('Still on login/guard page, waiting for user to continue.');
-    }
-  }
-
-  /// After any page finishes loading, check if we're past login.
-  void _checkForLogin(String url) {
-    debugPrint('PAGE FINISHED: $url');
-
-    // If we already navigated past login — extract from here
-    if (_navigatedToProfile) {
-      if (url.contains('steamcommunity.com')) {
-        _tryExtract(url);
+        ));
+      setState(() => _controller = controller);
+      await controller.loadRequest(session.loginUrl);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error = 'Could not start Steam sign-in. Check your connection and try again.';
+          _loading = false;
+        });
       }
-      return;
-    }
-
-    // Still on login/signin/guard pages — not done yet
-    if (url.contains('/login') || url.contains('/signin')) return;
-
-    // Past login on a Steam domain
-    final isSteam = url.contains('steampowered.com') ||
-        url.contains('steamcommunity.com');
-    if (!isSteam) return;
-
-    _navigatedToProfile = true;
-
-    if (url.contains('steamcommunity.com')) {
-      // Already on steamcommunity.com — cookies are set here, extract directly.
-      debugPrint('Login detected on steamcommunity — extracting...');
-      _tryExtract(url);
-    } else {
-      // On steampowered.com — navigate to steamcommunity for the cookie.
-      // (Fallback path if the login URL is ever changed back.)
-      debugPrint('Login detected on steampowered — navigating to steamcommunity...');
-      _controller.loadRequest(
-          Uri.parse('https://steamcommunity.com/my/profile'));
     }
   }
 
-  /// Attempt extraction; only pops when we have a non-empty Steam ID.
-  /// Concurrent attempts are allowed — _popped guards against double-pop.
-  /// Popping with an empty steamId would cause the caller to silently
-  /// discard the login and the user ends up back at the sign-in screen.
-  Future<void> _tryExtract(String url) async {
-    if (_popped) return;
-    final result = await _extract(url);
-    if (result == null || result.steamId.isEmpty) return;
-    if (!mounted || _popped) return;
-    _popped = true;
-    Navigator.of(context).pop(result);
-  }
-
-  /// Navigate to steamcommunity then extract once the page loads.
-  /// Used by Done button and resume-from-background.
-  Future<void> _goToProfileAndExtract() async {
-    if (_navigatedToProfile) {
-      // Already there or navigating — just try extraction now
-      final url = await _controller.currentUrl() ?? '';
-      _tryExtract(url);
-      return;
-    }
-    _navigatedToProfile = true;
-    _controller.loadRequest(
-        Uri.parse('https://steamcommunity.com/my/profile'));
-    // onPageFinished will call _tryExtract once the page loads
-  }
-
-  /// Platform channel to read HttpOnly cookies from Android's native CookieManager.
-  static const _cookieChannel = MethodChannel('com.deportfolio/cookies');
-
-  /// Read native HttpOnly cookies for a given URL.
-  Future<String?> _getNativeCookies(String url) async {
+  Future<void> _finishLogin(Uri uri) async {
+    if (_verifying || !mounted) return;
+    setState(() {
+      _verifying = true;
+      _loading = true;
+    });
     try {
-      final cookies = await _cookieChannel.invokeMethod<String>(
-        'getCookies',
-        {'url': url},
-      );
-      return cookies;
-    } catch (e) {
-      debugPrint('Native cookie read error: $e');
-      return null;
-    }
-  }
-
-  /// Read cookie and Steam ID from the current WebView state.
-  Future<SteamLoginResult?> _extract(String url) async {
-    String? steamId;
-    String? cookie;
-
-    // Steam ID from URL
-    final m = RegExp(r'profiles/(\d{17})').firstMatch(url);
-    if (m != null) steamId = m.group(1);
-
-    // Read HttpOnly cookies via native Android CookieManager
-    final nativeCookies =
-        await _getNativeCookies('https://steamcommunity.com');
-    if (nativeCookies != null && nativeCookies.isNotEmpty) {
-      debugPrint('Native cookies length: ${nativeCookies.length}');
-      final cm =
-          RegExp(r'steamLoginSecure=([^;]+)').firstMatch(nativeCookies);
-      if (cm != null) {
-        cookie = cm.group(1);
-        debugPrint('Found steamLoginSecure via native CookieManager');
-
-        // Extract Steam ID from cookie value if not found in URL
-        if (steamId == null) {
-          final im = RegExp(r'^(\d{17})').firstMatch(cookie!);
-          if (im != null) steamId = im.group(1);
-        }
-      } else {
-        debugPrint('steamLoginSecure not found in native cookies');
+      if (uri.queryParameters['openid.mode'] == 'cancel') {
+        throw const FormatException('Steam sign-in was cancelled.');
       }
-    } else {
-      debugPrint('No native cookies returned');
-    }
-
-    // Fallback: Steam ID from page DOM
-    if (steamId == null) {
+      final session = _session!;
+      final assertion = session.assertionFrom(uri);
+      final steamId = await ref.read(authProvider.notifier).signInWithSteamAssertion(
+        session.sessionId, assertion,
+      );
+      String? cookie;
+      // Optional Android cookie enables Steam price-history requests. Identity
+      // never comes from this cookie, the DOM, or a public profile URL.
       try {
-        final r = await _controller.runJavaScriptReturningResult(
-          '(function(){var e=document.querySelector("[data-steamid]");'
-          'if(e)return e.getAttribute("data-steamid");'
-          'if(typeof g_steamID!=="undefined"&&g_steamID)return g_steamID;'
-          'return "";})()',
+        final cookies = await _cookieChannel.invokeMethod<String>(
+          'getCookies', {'url': 'https://steamcommunity.com'},
         );
-        final id = r.toString().replaceAll('"', '');
-        if (RegExp(r'^\d{17}$').hasMatch(id)) steamId = id;
-      } catch (_) {}
+        final value = RegExp(r'steamLoginSecure=([^;]+)').firstMatch(cookies ?? '')?.group(1);
+        if (value != null && Uri.decodeComponent(value).startsWith('$steamId||')) {
+          cookie = value;
+        }
+      } catch (_) {
+        // Native cookie extraction is currently Android-only.
+      }
+      if (mounted) {
+        Navigator.of(context).pop(SteamLoginResult(steamId: steamId, steamLoginCookie: cookie));
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error = 'Steam sign-in could not be verified. Please try again.';
+          _loading = false;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _verifying = false);
     }
-
-    // A cookie without a steamId is useless to the rest of the app —
-    // every consumer of SteamLoginResult guards on steamId.isNotEmpty
-    // before doing anything. Returning null here makes the contract
-    // explicit: callers never see a populated-but-unusable result.
-    if (steamId == null) {
-      debugPrint('Steam ID not found yet (cookie present: ${cookie != null}) '
-          '— extraction not ready');
-      return null;
-    }
-
-    debugPrint('Steam ID: $steamId, cookie: ${cookie != null ? "yes" : "no"}');
-    return SteamLoginResult(steamId: steamId, steamLoginCookie: cookie);
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Sign in with Steam',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => Navigator.of(context).pop(null),
-        ),
-        actions: [
-          TextButton(
-            onPressed: _goToProfileAndExtract,
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          WebViewWidget(controller: _controller),
-          if (_isLoading) const LinearProgressIndicator(),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_verifying,
+    child: Scaffold(
+      appBar: AppBar(title: const Text('Sign in with Steam')),
+      body: Stack(children: [
+        if (_error != null)
+          Center(child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(_error!, textAlign: TextAlign.center),
+              const SizedBox(height: 16),
+              FilledButton(onPressed: _startLogin, child: const Text('Try again')),
+            ]),
+          ))
+        else if (_controller != null)
+          AbsorbPointer(absorbing: _verifying, child: WebViewWidget(controller: _controller!)),
+        if (_loading) const LinearProgressIndicator(),
+      ]),
+    ),
+  );
 }

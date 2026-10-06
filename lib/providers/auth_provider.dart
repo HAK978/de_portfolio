@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/firestore_service.dart';
+import '../models/steam_login_session.dart';
 
 /// Provides the FirestoreService instance.
 final firestoreServiceProvider = Provider<FirestoreService>((ref) {
@@ -86,8 +87,19 @@ class AuthNotifier extends Notifier<AuthState> {
 
   void _listenToAuthChanges() {
     try {
-      _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
+      _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) async {
         if (user != null) {
+          try {
+            final token = await user.getIdTokenResult();
+            if (!ref.mounted || FirebaseAuth.instance.currentUser?.uid != user.uid) return;
+            if (token.claims?['steamVerified'] != true) {
+              state = const AuthState(error: 'Please sign in with Steam again to enable cloud sync.');
+              return;
+            }
+          } catch (_) {
+            if (ref.mounted) state = const AuthState(error: 'Could not verify cloud sign-in.');
+            return;
+          }
           debugPrint('Firebase auth: signed in as ${user.uid}');
           state = state.copyWith(
             isLoggedIn: true,
@@ -105,40 +117,35 @@ class AuthNotifier extends Notifier<AuthState> {
     }
   }
 
-  /// Exchanges a Steam ID for a Firebase auth session.
-  ///
-  /// Flow:
-  /// 1. Call Cloud Function with Steam ID
-  /// 2. Cloud Function validates + creates custom token
-  /// 3. Sign in to Firebase with that token
-  /// 4. Auth state listener picks up the sign-in
-  Future<void> signInWithSteamId(String steamId) async {
+  Future<SteamLoginSession> beginSteamLogin() async {
+    final result = await FirebaseFunctions.instance
+        .httpsCallable('beginSteamLogin').call<Map<String, dynamic>>();
+    return SteamLoginSession(result.data);
+  }
+
+  Future<String> signInWithSteamAssertion(
+    String sessionId,
+    Map<String, String> assertion,
+  ) async {
     state = state.copyWith(isLoading: true, error: null);
-
     try {
-      debugPrint('Requesting Firebase token for Steam ID: $steamId');
-
-      final callable = FirebaseFunctions.instance.httpsCallable(
-        'createCustomToken',
-      );
-      final result = await callable.call<Map<String, dynamic>>({
-        'steamId': steamId,
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('createCustomToken').call<Map<String, dynamic>>({
+        'sessionId': sessionId,
+        'assertion': assertion,
       });
-
-      final token = result.data['token'] as String?;
-      if (token == null) {
-        throw Exception('No token returned from Cloud Function');
+      final token = result.data['token'] as String;
+      final credential = await FirebaseAuth.instance.signInWithCustomToken(token);
+      final steamId = credential.user!.uid;
+      if (ref.mounted) {
+        state = state.copyWith(isLoggedIn: true, steamId: steamId, isLoading: false);
       }
-
-      debugPrint('Got custom token, signing in...');
-      await FirebaseAuth.instance.signInWithCustomToken(token);
-      // Auth state listener will update state to isLoggedIn: true
-    } catch (e) {
-      debugPrint('Firebase sign-in failed: $e');
-      state = state.copyWith(
-        isLoading: false,
-        error: e.toString(),
-      );
+      return steamId;
+    } catch (_) {
+      if (ref.mounted) {
+        state = state.copyWith(isLoading: false, error: 'Steam sign-in could not be verified.');
+      }
+      rethrow;
     }
   }
 

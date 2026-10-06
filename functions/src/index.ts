@@ -1,7 +1,8 @@
 import * as admin from "firebase-admin";
-import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
+import {LOGIN_TTL_MS, newSteamLogin, sessionKey, verifySteamAssertion} from "./steamAuth";
 
 admin.initializeApp();
 
@@ -85,48 +86,64 @@ async function fetchCsfloatPrice(
   }
 }
 
-/**
- * Creates a Firebase custom auth token for a Steam user.
- *
- * Called by the Flutter app after the user logs in via Steam OpenID.
- * The Steam ID becomes the Firebase UID, so Firestore security rules
- * can enforce document ownership with request.auth.uid == steamId.
- *
- * Security: `enforceAppCheck: true` rejects calls from anything that
- * isn't a verified install of our app (Play Integrity / DeviceCheck
- * attestation). Without it the function is a wide-open auth bypass —
- * any unauthenticated client can request a Firebase token for any
- * 17-digit Steam ID, including the owner's (which is publicly
- * visible from any Steam profile URL).
- *
- * App Check doesn't stop a *compromised* app instance from claiming
- * any Steam ID, but it raises the bar from "anyone with curl" to
- * "an attacker who can ship a tampered build". For single-tenant
- * deployment that's the right tier of protection.
- */
+// The WebView intercepts this URL before loading it. A fallback page contains
+// no assertion data or tokens and is safe if opened outside the app.
+export const steamLoginReturn = onRequest({invoker: "public"}, (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.set("Referrer-Policy", "no-referrer");
+  res.status(200).send("Return to CS2 Portfolio to finish signing in.");
+});
+
+export const beginSteamLogin = onCall(
+  {invoker: "public", enforceAppCheck: true},
+  async () => {
+    const project = process.env.GCLOUD_PROJECT;
+    if (!project) throw new HttpsError("internal", "Missing project configuration");
+    const login = newSteamLogin(
+      `https://us-central1-${project}.cloudfunctions.net/steamLoginReturn`,
+    );
+    await admin.firestore().collection("steamLoginSessions").doc(sessionKey(login.sessionId)).set({
+      returnTo: login.returnTo,
+      expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + LOGIN_TTL_MS),
+    });
+    return login;
+  },
+);
+
+// Legacy requests containing only a Steam ID are rejected. Identity comes only
+// from the assertion verified directly with Steam, then bound to a one-use session.
 export const createCustomToken = onCall(
   {invoker: "public", enforceAppCheck: true},
   async (request) => {
-    const steamId = request.data?.steamId;
-
-    // Validate Steam ID format: must be a 17-digit number
-    if (!steamId || typeof steamId !== "string" || !/^\d{17}$/.test(steamId)) {
-      throw new HttpsError(
-        "invalid-argument",
-        "steamId must be a 17-digit number"
-      );
-    }
-
+    let key: string;
     try {
-      console.log(`Creating custom token for Steam ID: ${steamId}`);
-      const token = await admin.auth().createCustomToken(steamId);
-      console.log("Custom token created successfully");
-      return {token};
-    } catch (error) {
-      console.error("Error creating custom token:", error);
-      throw new HttpsError("internal", "Failed to create auth token");
+      key = sessionKey(request.data?.sessionId);
+    } catch {
+      throw new HttpsError("invalid-argument", "Start a new Steam login");
     }
-  }
+    const db = admin.firestore();
+    const sessionRef = db.collection("steamLoginSessions").doc(key);
+    const session = (await sessionRef.get()).data();
+    if (!session || session.expiresAt.toMillis() <= Date.now()) {
+      throw new HttpsError("unauthenticated", "Steam login expired. Please try again.");
+    }
+    let steamId: string;
+    try {
+      steamId = await verifySteamAssertion(request.data?.assertion, session.returnTo);
+    } catch {
+      // Never log assertions, session secrets, cookies or Firebase tokens.
+      throw new HttpsError("unauthenticated", "Steam login could not be verified. Please try again.");
+    }
+    const token = await admin.auth().createCustomToken(steamId, {steamVerified: true});
+    await db.runTransaction(async (transaction) => {
+      const current = (await transaction.get(sessionRef)).data();
+      if (!current || current.expiresAt.toMillis() <= Date.now()) {
+        throw new HttpsError("unauthenticated", "Steam login already used or expired");
+      }
+      transaction.delete(sessionRef);
+    });
+    return {token, steamId};
+  },
 );
 
 // How old each baseline may get before it's re-snapshotted. Decoupled
