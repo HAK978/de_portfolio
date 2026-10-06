@@ -1,7 +1,8 @@
 # Terraform: GCP infra for cs2-storage
 
-This module declares the GCP resources currently running for the CS2
-Portfolio Manager's storage-service backend:
+This module describes the GCP resources running for the CS2 Portfolio
+Manager's storage-service backend. They were created with `gcloud`
+first, so to manage them with Terraform you import them (below):
 
 | Resource                              | Description                                     |
 |---------------------------------------|-------------------------------------------------|
@@ -36,14 +37,24 @@ terraform import -var "project_id=cs2-portfolio" \
   google_compute_address.cs2_storage_ip projects/cs2-portfolio/regions/us-central1/addresses/cs2-storage-ip
 
 terraform import -var "project_id=cs2-portfolio" \
-  google_compute_firewall.allow_https projects/cs2-portfolio/global/firewalls/allow-cs2-storage-https
+  google_compute_firewall.allow_https projects/cs2-portfolio/global/firewalls/allow-cs2-https
 
 terraform import -var "project_id=cs2-portfolio" \
   google_compute_instance.cs2_storage projects/cs2-portfolio/zones/us-central1-a/instances/cs2-storage
 ```
 
-After import, `terraform plan` should report no changes (or only
-trivial drift such as machine-image autoresolution).
+After import, `terraform plan` should report no changes. The config
+mirrors the live VM (service account and scopes, shielded-VM settings,
+two-block firewall rule), and two things are deliberately ignored:
+
+- **Instance metadata**: SSH keys are added by `gcloud compute ssh`.
+  Managing metadata here would delete them on apply.
+- **Boot image**: the `ubuntu-2204-lts` family keeps moving to newer
+  images. Without ignoring it, Terraform would plan to *replace* the VM
+  (and lose its Steam session) whenever a new image is published.
+
+Review the plan before any apply. Anything marked "must be replaced"
+on the instance means something drifted.
 
 ## Apply (provisions new infra in an empty project)
 

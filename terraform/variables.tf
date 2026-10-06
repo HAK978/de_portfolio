@@ -33,6 +33,12 @@ variable "disk_size_gb" {
   default     = 10
 }
 
+variable "https_firewall_name" {
+  description = "Name of the firewall rule that opens tcp:80/443 for Caddy."
+  type        = string
+  default     = "allow-cs2-https"
+}
+
 variable "network" {
   description = "VPC network the VM and firewall rule attach to."
   type        = string
