@@ -3,12 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
 import '../services/csfloat_service.dart';
 import '../services/price_service.dart';
+import '../services/secure_setting.dart';
 import 'auth_provider.dart';
 import 'inventory_provider.dart';
 import 'storage_provider.dart';
@@ -249,75 +249,10 @@ final csfloatApiKeyProvider = NotifierProvider<CsfloatApiKeyNotifier, String>(
   CsfloatApiKeyNotifier.new,
 );
 
-/// Stores the CSFloat API key in encrypted storage (Android Keystore /
-/// iOS Keychain) instead of a plaintext file in the app's documents
-/// directory. On a rooted device the old plaintext file was readable;
-/// the keystore-backed entry is not.
-///
-/// Includes a one-time migration: if a `csfloat_api_key.txt` file
-/// exists from an older install, it's copied to secure storage and
-/// the file is deleted on the next read.
-class CsfloatApiKeyNotifier extends Notifier<String> {
-  static const _fileName = 'csfloat_api_key.txt';
-  static const _secureStorageKey = 'csfloat_api_key';
-  static const _storage = FlutterSecureStorage();
-
+/// The CSFloat API key lives in secure storage, not a plaintext file.
+class CsfloatApiKeyNotifier extends SecureSettingNotifier {
   @override
-  String build() {
-    ref.keepAlive();
-    _loadSavedKey();
-    return '';
-  }
-
-  void set(String value) {
-    state = value;
-    _saveKey(value);
-  }
-
-  Future<void> _loadSavedKey() async {
-    try {
-      // Prefer the secure storage entry. Falls through to the legacy
-      // file path if the secure entry doesn't exist yet (one-time
-      // migration window after upgrading from a pre-secure build).
-      var key = await _storage.read(key: _secureStorageKey);
-
-      if (key == null || key.isEmpty) {
-        final dir = await getApplicationDocumentsDirectory();
-        final legacyFile = File('${dir.path}/$_fileName');
-        if (legacyFile.existsSync()) {
-          final legacyKey = (await legacyFile.readAsString()).trim();
-          if (legacyKey.isNotEmpty) {
-            await _storage.write(
-                key: _secureStorageKey, value: legacyKey);
-            key = legacyKey;
-            debugPrint('Migrated CSFloat key from plaintext file → secure storage');
-          }
-          // Delete the legacy file regardless — empty file or migrated.
-          try {
-            await legacyFile.delete();
-          } catch (_) {}
-        }
-      }
-
-      if (key != null && key.isNotEmpty && state.isEmpty) {
-        state = key;
-      }
-    } catch (e) {
-      debugPrint('Error loading CSFloat API key: $e');
-    }
-  }
-
-  Future<void> _saveKey(String key) async {
-    try {
-      if (key.isEmpty) {
-        await _storage.delete(key: _secureStorageKey);
-      } else {
-        await _storage.write(key: _secureStorageKey, value: key);
-      }
-    } catch (e) {
-      debugPrint('Error saving CSFloat API key: $e');
-    }
-  }
+  SecureSetting get setting => Secrets.csfloatApiKey;
 }
 
 final csfloatServiceProvider = Provider<CsfloatService>((ref) {
@@ -349,20 +284,17 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
       return;
     }
 
-    // Wait for CSFloat API key to load from disk if needed
+    // The key loads from secure storage at startup. If a fetch starts
+    // before that finishes, wait for the load instead of failing.
     var apiKey = ref.read(csfloatApiKeyProvider);
     if (apiKey.isEmpty) {
-      state = PriceFetchState(
+      state = const PriceFetchState(
         isFetching: true,
         total: 0,
-        currentItem: 'Waiting for API key...',
+        currentItem: 'Loading API key...',
       );
-      // Give async key loading up to 3 seconds
-      for (var i = 0; i < 6; i++) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        apiKey = ref.read(csfloatApiKeyProvider);
-        if (apiKey.isNotEmpty) break;
-      }
+      await ref.read(csfloatApiKeyProvider.notifier).loaded;
+      apiKey = ref.read(csfloatApiKeyProvider);
       if (apiKey.isEmpty) {
         state = const PriceFetchState(
           error: 'CSFloat API key not set — add it in Settings',

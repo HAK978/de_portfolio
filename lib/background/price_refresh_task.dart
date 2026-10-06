@@ -6,10 +6,10 @@ import 'package:path_provider/path_provider.dart';
 
 import '../services/csfloat_service.dart';
 import '../services/price_service.dart';
+import '../services/secure_setting.dart';
 
 const _kInventoryCacheFile = 'inventory_cache.json';
 const _kStorageCachePrefix = 'storage_cache_';
-const _kCsfloatApiKeyFile = 'csfloat_api_key.txt';
 const _kLastFetchFile = 'last_price_fetch.txt';
 
 /// Entry point for the WorkManager background price refresh task.
@@ -73,12 +73,14 @@ Future<void> _refreshStoragePrices(String dirPath) async {
 
   if (cacheFiles.isEmpty) return;
 
-  // Read CSFloat API key once
+  // Same secure-storage entry the foreground app uses. (This used to
+  // read csfloat_api_key.txt, which the secure-storage migration in
+  // v1.2.0 deletes, so background CSFloat refreshes had silently stopped.)
   String? csfloatKey;
-  final keyFile = File('$dirPath/$_kCsfloatApiKeyFile');
-  if (keyFile.existsSync()) {
-    csfloatKey = (await keyFile.readAsString()).trim();
-    if (csfloatKey.isEmpty) csfloatKey = null;
+  try {
+    csfloatKey = await Secrets.csfloatApiKey.read();
+  } catch (e) {
+    debugPrint('[BG] Could not read the CSFloat API key: $e');
   }
 
   final priceService = PriceService();

@@ -3,13 +3,13 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/cs2_item.dart';
 import '../models/storage_unit.dart';
 import '../services/csfloat_service.dart';
 import '../services/price_service.dart';
+import '../services/secure_setting.dart';
 import '../services/storage_service.dart';
 import 'price_provider.dart';
 
@@ -61,69 +61,11 @@ final storageApiKeyProvider = NotifierProvider<StorageApiKeyNotifier, String>(
   StorageApiKeyNotifier.new,
 );
 
-/// Stores the storage-service API key in encrypted storage (Android
-/// Keystore / iOS Keychain) instead of a plaintext file. This key grants
-/// access to the GCE VM (and thus the owner's Steam storage), so it gets
-/// the same protection as the CSFloat key. Includes a one-time migration
-/// from the legacy `storage_api_key.txt` file.
-class StorageApiKeyNotifier extends Notifier<String> {
-  static const _fileName = 'storage_api_key.txt';
-  static const _secureStorageKey = 'storage_api_key';
-  static const _storage = FlutterSecureStorage();
-
+/// The storage-service API key grants access to the VM (and so to the
+/// owner's Steam storage), so it lives in secure storage.
+class StorageApiKeyNotifier extends SecureSettingNotifier {
   @override
-  String build() {
-    ref.keepAlive();
-    _loadSaved();
-    return '';
-  }
-
-  void set(String value) {
-    state = value;
-    _save(value);
-  }
-
-  Future<void> _loadSaved() async {
-    try {
-      // Prefer the encrypted entry; fall back to the legacy plaintext
-      // file once (migrate + delete it) after upgrading from an older build.
-      var key = await _storage.read(key: _secureStorageKey);
-
-      if (key == null || key.isEmpty) {
-        final dir = await getApplicationDocumentsDirectory();
-        final legacyFile = File('${dir.path}/$_fileName');
-        if (legacyFile.existsSync()) {
-          final legacyKey = (await legacyFile.readAsString()).trim();
-          if (legacyKey.isNotEmpty) {
-            await _storage.write(key: _secureStorageKey, value: legacyKey);
-            key = legacyKey;
-            debugPrint('Migrated storage API key from plaintext file → secure storage');
-          }
-          try {
-            await legacyFile.delete();
-          } catch (_) {}
-        }
-      }
-
-      if (key != null && key.isNotEmpty && state.isEmpty) {
-        state = key;
-      }
-    } catch (e) {
-      debugPrint('Error loading storage API key: $e');
-    }
-  }
-
-  Future<void> _save(String key) async {
-    try {
-      if (key.isEmpty) {
-        await _storage.delete(key: _secureStorageKey);
-      } else {
-        await _storage.write(key: _secureStorageKey, value: key);
-      }
-    } catch (e) {
-      debugPrint('Error saving storage API key: $e');
-    }
-  }
+  SecureSetting get setting => Secrets.storageApiKey;
 }
 
 /// StorageService instance, rebuilt when URL or API key changes.
@@ -593,14 +535,11 @@ class StorageNotifier extends Notifier<StorageState> {
     final key = '${casketId}_csfloat';
     if (state.pricingCaskets.contains(key)) return;
 
-    // The CSFloat API key loads from disk asynchronously on app start.
-    // Poll briefly so a fast user-action right after launch doesn't
-    // race the disk read; cap at 3s so a genuinely-empty key doesn't
-    // block forever.
+    // The CSFloat API key loads from secure storage at startup; wait for
+    // that load if a fetch starts right after launch.
     var apiKey = ref.read(csfloatApiKeyProvider);
-    final waitDeadline = DateTime.now().add(const Duration(seconds: 3));
-    while (apiKey.isEmpty && DateTime.now().isBefore(waitDeadline)) {
-      await Future.delayed(const Duration(milliseconds: 100));
+    if (apiKey.isEmpty) {
+      await ref.read(csfloatApiKeyProvider.notifier).loaded;
       apiKey = ref.read(csfloatApiKeyProvider);
     }
     final service = CsfloatService(apiKey: apiKey.isNotEmpty ? apiKey : null);

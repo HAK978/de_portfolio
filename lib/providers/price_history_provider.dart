@@ -1,61 +1,19 @@
-import 'dart:io';
-
-import 'package:flutter/foundation.dart';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../services/price_history_service.dart';
+import '../services/secure_setting.dart';
 
-/// Steam login cookie — persisted to disk, loaded on startup.
-///
-/// Required for the price history endpoint which needs an
-/// authenticated Steam session.
+/// Steam login cookie (steamLoginSecure), needed for the price-history
+/// endpoint. It's a live Steam web session, so it's kept in secure
+/// storage (migrated from the plaintext file older builds used).
 final steamLoginCookieProvider =
     NotifierProvider<SteamLoginCookieNotifier, String>(
   SteamLoginCookieNotifier.new,
 );
 
-class SteamLoginCookieNotifier extends Notifier<String> {
-  static const _fileName = 'steam_login_cookie.txt';
-
+class SteamLoginCookieNotifier extends SecureSettingNotifier {
   @override
-  String build() {
-    ref.keepAlive();
-    _loadSaved();
-    return '';
-  }
-
-  void set(String value) {
-    state = value;
-    _save(value);
-  }
-
-  Future<void> _loadSaved() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      if (file.existsSync()) {
-        final cookie = await file.readAsString();
-        if (cookie.trim().isNotEmpty && state.isEmpty) {
-          state = cookie.trim();
-          debugPrint('Loaded Steam login cookie from disk');
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading Steam login cookie: $e');
-    }
-  }
-
-  Future<void> _save(String cookie) async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      await file.writeAsString(cookie);
-    } catch (e) {
-      debugPrint('Error saving Steam login cookie: $e');
-    }
-  }
+  SecureSetting get setting => Secrets.steamLoginCookie;
 }
 
 /// Service instance — recreated when the cookie changes.
