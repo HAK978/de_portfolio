@@ -36,8 +36,8 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  storage-syntax:
-    name: storage-service syntax check
+  storage-service:
+    name: storage-service tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,9 +46,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22' # matches the VM
           cache: npm
           cache-dependency-path: storage-service/package-lock.json
+      - run: npm ci
       - run: node --check index.js
-      - run: node --check itemResolver.js
-      - run: node --check metrics.js
+      - run: npm test

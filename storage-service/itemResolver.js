@@ -25,17 +25,8 @@ class ItemResolver {
 
   /** Initialize — download fresh data, fall back to backups */
   async init() {
-    // Load backups first (instant)
-    try {
-      this.translation = require('./itemData/csgo_english.json');
-      this.csgoItems = require('./itemData/items_game.json');
-      console.log('[Items] Loaded backup item data');
-    } catch (e) {
-      console.error('[Items] Failed to load backup data:', e.message);
-    }
-
-    // Build collection map from backup data first
-    this._buildCollectionMap();
+    // Load backups first (instant) so the resolver works even offline.
+    this.loadBundledData();
 
     // Try to download fresh data (rebuilds collection map on success)
     try {
@@ -45,7 +36,18 @@ class ItemResolver {
     } catch (e) {
       console.log('[Items] Using backup data (download failed):', e.message);
     }
+  }
 
+  /** Loads the item definitions bundled in itemData/ (no network). */
+  loadBundledData() {
+    try {
+      this.translation = require('./itemData/csgo_english.json');
+      this.csgoItems = require('./itemData/items_game.json');
+      console.log('[Items] Loaded backup item data');
+    } catch (e) {
+      console.error('[Items] Failed to load backup data:', e.message);
+    }
+    this._buildCollectionMap();
     this.ready = true;
   }
 
@@ -165,12 +167,13 @@ class ItemResolver {
       }
     }
 
-    // Prefix name
-    if (item.quality === 3) {
-      name = '★ ' + name;
-    }
+    // Prefix name. Steam's market names put the star first:
+    // "★ StatTrak™ Karambit | Doppler (Factory New)".
     if (isStatTrak) {
       name = 'StatTrak™ ' + name;
+    }
+    if (item.quality === 3) {
+      name = '★ ' + name;
     }
     if (isSouvenir && !name.includes('Souvenir')) {
       name = 'Souvenir ' + name;
@@ -179,7 +182,8 @@ class ItemResolver {
     // Build market_hash_name (name + wear)
     const marketHashName = wear ? `${name} (${wear})` : name;
 
-    // Rarity mapping
+    // Rarity mapping (GC rarity values; 7 is "immortal", shown as
+    // Contraband, e.g. the M4A4 | Howl).
     const rarityNames = {
       1: 'Consumer Grade',
       2: 'Industrial Grade',
@@ -187,7 +191,7 @@ class ItemResolver {
       4: 'Restricted',
       5: 'Classified',
       6: 'Covert',
-      7: 'Extraordinary',
+      7: 'Contraband',
     };
 
     const rarityColors = {
@@ -197,7 +201,7 @@ class ItemResolver {
       4: '#8847ff',
       5: '#d32ce6',
       6: '#eb4b4b',
-      7: '#ffd700',
+      7: '#e4ae39',
     };
 
     // Full image URL
@@ -318,10 +322,12 @@ class ItemResolver {
   }
 
   _getWearName(paintWear) {
-    const thresholds = [0.07, 0.15, 0.38, 0.45, 1];
-    const names = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
-    for (let i = 0; i < thresholds.length; i++) {
-      if (paintWear <= thresholds[i]) return names[i];
+    // Ranges are half-open: [0, 0.07) is Factory New, [0.07, 0.15) is
+    // Minimal Wear, and so on, so a float of exactly 0.07 is Minimal Wear.
+    const upperBounds = [0.07, 0.15, 0.38, 0.45];
+    const names = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn'];
+    for (let i = 0; i < upperBounds.length; i++) {
+      if (paintWear < upperBounds[i]) return names[i];
     }
     return 'Battle-Scarred';
   }

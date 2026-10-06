@@ -1,76 +1,35 @@
-const express = require('express');
+// Storage service entry point: owns the Steam + Game Coordinator
+// session and serves the HTTP API from app.js.
+
 const SteamUser = require('steam-user');
 const GlobalOffensive = require('globaloffensive');
 const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
-const ItemResolver = require('./itemResolver');
-const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const readline = require('readline');
+const ItemResolver = require('./itemResolver');
 const metrics = require('./metrics');
+const { createApp } = require('./app');
+const { readToken, writeToken, tokenExpiryMs, shouldRenew } = require('./token');
 
-const app = express();
-const itemResolver = new ItemResolver();
-app.use(express.json());
-
-// ── Metrics middleware ────────────────────────────────────
-// Registered BEFORE the API-key middleware so /metrics is reachable
-// without an API key (Prometheus scrapers typically don't carry one).
-// Tracks request volume + latency, labelled by the matched route
-// pattern so high-cardinality casket IDs don't blow up the histogram.
-app.use((req, res, next) => {
-  const start = process.hrtime.bigint();
-  res.on('finish', () => {
-    const route = req.route?.path || 'unmatched';
-    const duration = Number(process.hrtime.bigint() - start) / 1e9;
-    metrics.httpRequestsTotal.inc({
-      route,
-      method: req.method,
-      status: String(res.statusCode),
-    });
-    metrics.httpRequestDurationSeconds.observe(
-      { route, method: req.method },
-      duration,
-    );
-  });
-  next();
-});
-
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', metrics.register.contentType);
-  res.send(await metrics.register.metrics());
-});
-
-// ── Config (env vars for remote, defaults for local dev) ─
-const PORT = process.env.PORT || 3456;
+// ── Config (env vars; see DEPLOY.md) ──────────────────────
+const PORT = Number(process.env.PORT) || 3456;
+// Loopback by default: Caddy terminates TLS on the same machine and
+// proxies to localhost. Set HOST=0.0.0.0 only for LAN development.
+const HOST = process.env.HOST || '127.0.0.1';
 const API_KEY = process.env.API_KEY || '';
+const ALLOW_NO_AUTH = process.env.ALLOW_NO_AUTH === '1';
 const REFRESH_TOKEN_ENV = process.env.REFRESH_TOKEN || '';
 const TOKEN_FILE = path.join(__dirname, '.refresh_token');
 
-// ── API key auth middleware ───────────────────────────────
-// Only enforced if API_KEY env var is set. Skipped for local dev.
-// Constant-time comparison so the check can't leak the key via timing.
-function safeKeyEqual(provided, expected) {
-  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
-  const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-if (API_KEY) {
-  app.use((req, res, next) => {
-    if (!safeKeyEqual(req.headers['x-api-key'], API_KEY)) {
-      return res.status(401).json({ error: 'Invalid or missing API key' });
-    }
-    next();
-  });
-  console.log('[Auth] API key protection enabled');
-}
+const itemResolver = new ItemResolver();
 
 // ── Steam & GC instances ──────────────────────────────────
-let user = new SteamUser();
-let csgo = new GlobalOffensive(user);
+// renewRefreshTokens: on each logOn Steam may issue a fresh refresh
+// token (it does when the current one nears expiry). The old token stops
+// working at that point, so the 'refreshToken' handler below must save
+// the new one.
+const user = new SteamUser({ renewRefreshTokens: true });
+const csgo = new GlobalOffensive(user);
 let isLoggedIn = false;
 let isGCConnected = false;
 let isBlocked = false; // real Steam client is currently playing CS2
@@ -89,6 +48,11 @@ let gcIdleTimer = null;
 // game session mid-fetch aborts the request.
 let gcBusyCount = 0;
 
+function updateTokenExpiryMetric() {
+  const expiry = tokenExpiryMs(currentRefreshToken);
+  if (expiry !== null) metrics.refreshTokenExpiry.set(expiry / 1000);
+}
+
 // ── Steam event handlers ──────────────────────────────────
 
 user.on('loggedOn', () => {
@@ -97,6 +61,18 @@ user.on('loggedOn', () => {
   metrics.steamLoggedIn.set(1);
   // Intentionally do NOT call gamesPlayed([730]) here. GC is brought
   // up on demand by ensureGCConnected() when an API request needs it.
+});
+
+user.on('refreshToken', (token) => {
+  currentRefreshToken = token;
+  try {
+    writeToken(TOKEN_FILE, token);
+    console.log('[Auth] Steam renewed the refresh token — saved');
+  } catch (err) {
+    // The renewed token is still used in memory until the next restart.
+    console.error('[Auth] Could not save the renewed refresh token:', err.message);
+  }
+  updateTokenExpiryMetric();
 });
 
 user.on('accountInfo', (name) => {
@@ -123,7 +99,7 @@ user.on('playingState', (blocked, playingApp) => {
 // fires repeatedly within the 30s window, only one timer is active.
 // Without this, multiple stacked `setTimeout`-driven `user.logOn`
 // calls can race the watchdog and pile up reconnects.
-let _reconnectTimer = null;
+let reconnectTimer = null;
 
 user.on('error', (err) => {
   console.error('[Steam] Error:', err.message);
@@ -131,21 +107,17 @@ user.on('error', (err) => {
   isGCConnected = false;
 
   // LoggedInElsewhere is fatal — autoRelogin won't handle it.
-  if (err.eresult === 6) { // EResult.LoggedInElsewhere
-    if (_reconnectTimer) {
+  if (err.eresult === SteamUser.EResult.LoggedInElsewhere) {
+    if (reconnectTimer) {
       console.log('[Steam] Reconnect already pending; skipping duplicate');
       return;
     }
     const delaySec = 30;
     console.log(`[Steam] Will reconnect in ${delaySec}s...`);
-    _reconnectTimer = setTimeout(() => {
-      _reconnectTimer = null;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
       console.log('[Steam] Reconnecting...');
-      try {
-        user.logOn({ refreshToken: currentRefreshToken });
-      } catch (e) {
-        console.log('[Steam] logOn threw on reconnect:', e.message);
-      }
+      logOnWithToken();
     }, delaySec * 1000);
   }
 });
@@ -176,6 +148,15 @@ csgo.on('disconnectedFromGC', (reason) => {
   // calls ensureGCConnected() which sets gamesPlayed([730]) again.
 });
 
+function logOnWithToken() {
+  try {
+    user.logOn({ refreshToken: currentRefreshToken });
+  } catch (err) {
+    // steam-user throws if a logon is already in progress.
+    console.log('[Steam] logOn skipped:', err.message);
+  }
+}
+
 // ── Watchdog: recover from stuck Steam logins ─────────────
 // autoRelogin handles most disconnects but can get stuck. We only
 // watch the Steam login here; GC is on-demand and doesn't need a
@@ -183,13 +164,22 @@ csgo.on('disconnectedFromGC', (reason) => {
 setInterval(() => {
   if (!isLoggedIn) {
     console.log('[Watchdog] Steam disconnected — attempting re-login...');
-    try {
-      user.logOn({ refreshToken: currentRefreshToken });
-    } catch (e) {
-      console.log('[Watchdog] logOn failed:', e.message);
-    }
+    logOnWithToken();
   }
 }, 2 * 60 * 1000);
+
+// ── Refresh-token renewal ─────────────────────────────────
+// Steam client refresh tokens last ~200 days. Every logOn asks Steam
+// for a renewal, but the session can stay up for months, so once a day
+// check the expiry and, inside the renewal window, log off and back on
+// to give Steam the chance to issue a new token.
+setInterval(() => {
+  if (!shouldRenew(currentRefreshToken)) return;
+  if (!isLoggedIn || gcBusyCount > 0) return; // try again tomorrow
+  console.log('[Auth] Refresh token expires soon — re-logging on so Steam can renew it');
+  user.once('disconnected', () => setTimeout(logOnWithToken, 2000));
+  user.logOff();
+}, 24 * 60 * 60 * 1000);
 
 // ── Helpers: GC lifecycle ─────────────────────────────────
 
@@ -229,13 +219,15 @@ function endGCWork() {
 function waitForGC(timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     if (isGCConnected) return resolve();
-    const timeout = setTimeout(() => {
-      reject(new Error('GC connection timed out'));
-    }, timeoutMs);
-    csgo.once('connectedToGC', () => {
+    const onConnected = () => {
       clearTimeout(timeout);
       resolve();
-    });
+    };
+    const timeout = setTimeout(() => {
+      csgo.removeListener('connectedToGC', onConnected);
+      reject(new Error('GC connection timed out'));
+    }, timeoutMs);
+    csgo.once('connectedToGC', onConnected);
   });
 }
 
@@ -289,350 +281,143 @@ async function ensureGCConnected({ needInventory = false } = {}) {
   armIdleTimer();
 }
 
-// ── Helper: interactive login ─────────────────────────────
-// Creates a refresh token from Steam credentials.
-// Only used for local dev — not available on remote servers (no TTY).
+// The Steam/GC adapter app.js talks to.
+const steamAdapter = {
+  status: () => ({
+    steam: isLoggedIn,
+    gc: isGCConnected,
+    displayName: steamDisplayName,
+    steamId: user.steamID ? user.steamID.getSteamID64() : null,
+  }),
+  ensureConnected: ensureGCConnected,
+  inventory: () => csgo.inventory || [],
+  getCasketContents: (casketId) => new Promise((resolve, reject) => {
+    csgo.getCasketContents(casketId, (err, items) => (err ? reject(err) : resolve(items)));
+  }),
+  inspectItem: (link) => new Promise((resolve) => {
+    csgo.inspectItem(link, resolve);
+  }),
+  beginWork: beginGCWork,
+  endWork: endGCWork,
+};
 
+// ── Login helpers ─────────────────────────────────────────
+
+/// Creates a refresh token from Steam credentials. Needs a terminal,
+/// so it only runs when the service is started by hand (local dev, or
+/// over SSH to recover from an expired token). The password lives only
+/// in this process's memory.
 async function interactiveLogin() {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
 
-  console.log('\n=== Steam Login ===');
-  console.log('This generates a refresh token. You only need to do this once.\n');
-
-  const accountName = await ask('Steam username: ');
-  const password = await ask('Steam password: ');
-
-  const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
-
   try {
-    const result = await session.startWithCredentials({
-      accountName,
-      password,
-    });
+    console.log('\n=== Steam Login ===');
+    console.log('This generates a refresh token. You only need to do this once.\n');
 
-    let activeSession = session;
+    const accountName = await ask('Steam username: ');
+    const password = await ask('Steam password: ');
 
-    // Handle Steam Guard — cancel the polling session and start fresh
-    // with the code passed directly, avoiding the 30s poll timeout
+    let session = new LoginSession(EAuthTokenPlatformType.SteamClient);
+    const result = await session.startWithCredentials({ accountName, password });
+
+    // Steam Guard: cancel the polling session and start fresh with the
+    // code passed directly, avoiding the 30s poll timeout.
     if (result.actionRequired) {
       const guard = result.validActions[0];
       console.log(`\nSteam Guard required (type: ${guard.type})`);
       const code = (await ask('Enter Steam Guard code: ')).toUpperCase().trim();
-
-      // Kill the old session's polling
       session.cancelLoginAttempt();
-
-      // Start a new session with the code included
-      activeSession = new LoginSession(EAuthTokenPlatformType.SteamClient);
-      await activeSession.startWithCredentials({
-        accountName,
-        password,
-        steamGuardCode: code,
-      });
+      session = new LoginSession(EAuthTokenPlatformType.SteamClient);
+      await session.startWithCredentials({ accountName, password, steamGuardCode: code });
     }
 
-    // Wait for authenticated event
-    const refreshToken = await new Promise((resolve, reject) => {
-      activeSession.on('authenticated', () => {
-        resolve(activeSession.refreshToken);
-      });
-      activeSession.on('error', (err) => {
-        reject(err);
-      });
-      if (activeSession.refreshToken) {
-        resolve(activeSession.refreshToken);
-      }
+    const refreshToken = session.refreshToken || await new Promise((resolve, reject) => {
+      session.once('authenticated', () => resolve(session.refreshToken));
+      session.once('error', reject);
     });
 
-    // Save token
-    fs.writeFileSync(TOKEN_FILE, refreshToken);
+    writeToken(TOKEN_FILE, refreshToken);
     console.log('\n[Auth] Refresh token saved. You won\'t need to log in again.\n');
-    rl.close();
     return refreshToken;
-  } catch (err) {
+  } finally {
     rl.close();
-    throw err;
   }
 }
 
-// ── Helper: login with refresh token ──────────────────────
-
-async function loginWithToken(token) {
+function loginWithToken(token) {
   return new Promise((resolve, reject) => {
-    user.once('loggedOn', () => resolve());
-    user.once('error', (err) => reject(err));
+    const onLoggedOn = () => {
+      user.removeListener('error', onError);
+      resolve();
+    };
+    const onError = (err) => {
+      user.removeListener('loggedOn', onLoggedOn);
+      reject(err);
+    };
+    user.once('loggedOn', onLoggedOn);
+    user.once('error', onError);
     user.logOn({ refreshToken: token });
   });
 }
 
-// ── API Routes ────────────────────────────────────────────
-
-// GET /status — check connection state
-app.get('/status', (req, res) => {
-  res.json({
-    steam: isLoggedIn,
-    gc: isGCConnected,
-    displayName: steamDisplayName,
-  });
-});
-
-// GET /caskets — list all storage units in inventory
-app.get('/caskets', async (req, res) => {
-  try {
-    await ensureGCConnected({ needInventory: true });
-  } catch (err) {
-    return res.status(503).json({ error: err.message });
-  }
-
-  // csgo.inventory is populated by the GC after connecting.
-  // Storage units have a 'casket_contained_item_count' property.
-  const inventory = csgo.inventory || [];
-  const caskets = inventory.filter(
-    (item) => item.casket_contained_item_count !== undefined
-  );
-
-  console.log(`[API] Found ${caskets.length} storage units in inventory of ${inventory.length} items`);
-
-  const result = caskets.map((item) => ({
-    casketId: item.id,
-    name: item.custom_name || 'Storage Unit',
-    itemCount: item.casket_contained_item_count || 0,
-    defIndex: item.def_index,
-  }));
-
-  res.json({ total: result.length, caskets: result });
-});
-
-// In-flight casket fetches keyed by casketId. Prevents two concurrent
-// /storage/:id calls for the same casket from racing the
-// `globaloffensive` library's per-casket callback (which can return
-// stale results to the wrong request if both are pending).
-const _inflightCaskets = new Set();
-
-// GET /storage/:casketId — fetch storage unit contents
-app.get('/storage/:casketId', async (req, res) => {
-  try {
-    await ensureGCConnected();
-  } catch (err) {
-    return res.status(503).json({ error: err.message });
-  }
-
-  const casketId = req.params.casketId;
-
-  if (_inflightCaskets.has(casketId)) {
-    return res.status(409).json({
-      error: 'Already fetching this storage unit — wait for it to finish',
-    });
-  }
-  _inflightCaskets.add(casketId);
-  // Hold the GC session up for the whole fetch — a large casket can take
-  // longer than GC_IDLE_MS to enumerate, and the idle timer must not drop
-  // the game session mid-fetch (that was aborting large-casket loads).
-  beginGCWork();
-
-  console.log(`[API] Fetching contents of casket ${casketId}...`);
-
-  const fetchStart = Date.now();
-  try {
-    // 110s timeout — large caskets (~1k items) can take well over a
-    // minute for the GC to enumerate on a cold connection.
-    const rawItems = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Casket contents request timed out (110s) — try again, the GC was slow'));
-      }, 110000);
-
-      csgo.getCasketContents(casketId, (err, items) => {
-        clearTimeout(timeout);
-        if (err) return reject(err);
-        resolve(items);
-      });
-    });
-
-    // Extract hidden attributes (music_index, graffiti_tint)
-    for (const item of rawItems) {
-      itemResolver._extractMusicIndex(item);
-      itemResolver._extractGraffitiTint(item);
-    }
-
-    // Resolve raw GC data to human-readable names/images
-    const items = itemResolver.convertStorageItems(rawItems);
-
-    console.log(`[API] Casket ${casketId}: ${rawItems.length} raw → ${items.length} resolved`);
-    metrics.casketFetchesTotal.inc({ result: 'success' });
-    res.json({ casketId, itemCount: items.length, items });
-  } catch (err) {
-    metrics.casketFetchesTotal.inc({ result: 'error' });
-    console.error(`[API] Error fetching casket ${casketId}:`, err.message);
-    res.status(500).json({ error: err.message });
-  } finally {
-    metrics.casketFetchDurationSeconds.observe(
-      (Date.now() - fetchStart) / 1000,
-    );
-    _inflightCaskets.delete(casketId);
-    // Release the hold and re-arm the idle countdown now that the fetch
-    // is done (or failed).
-    endGCWork();
-  }
-});
-
-// GET /inventory/floats — return float values for all inventory items
-// Uses GC inventory data directly (no inspect requests needed for own items)
-app.get('/inventory/floats', async (req, res) => {
-  try {
-    await ensureGCConnected({ needInventory: true });
-  } catch (err) {
-    return res.status(503).json({ error: err.message });
-  }
-
-  const inventory = csgo.inventory || [];
-  const floats = {};
-
-  for (const item of inventory) {
-    if (item.paint_wear !== undefined && item.paint_wear > 0) {
-      // Key by def_index + paint_index + paint_wear to build a unique-ish key
-      // But for Flutter matching, we need market_hash_name → use itemResolver
-      const resolved = itemResolver._convertItem(item);
-      if (resolved && resolved.marketHashName) {
-        if (!floats[resolved.marketHashName]) {
-          floats[resolved.marketHashName] = [];
-        }
-        floats[resolved.marketHashName].push({
-          assetId: item.id,
-          floatValue: item.paint_wear,
-          paintSeed: item.paint_seed || null,
-          paintIndex: item.paint_index || null,
-        });
-      }
-    }
-  }
-
-  console.log(`[API] Returning floats for ${Object.keys(floats).length} unique items`);
-  res.json({ itemCount: Object.keys(floats).length, floats });
-});
-
-// GET /inspect?url=... — resolve float from an inspect link
-app.get('/inspect', async (req, res) => {
-  try {
-    await ensureGCConnected();
-  } catch (err) {
-    return res.status(503).json({ error: err.message });
-  }
-
-  const inspectLink =
-    typeof req.query.url === 'string' ? req.query.url.trim() : '';
-  if (!inspectLink) {
-    return res.status(400).json({ error: 'Missing ?url= parameter with inspect link' });
-  }
-  // Only accept genuine CS2 inspect links — this feeds the Game
-  // Coordinator using the VM's Steam session, so never pass arbitrary input.
-  const INSPECT_RE =
-    /^steam:\/\/rungame\/730\/\d+\/\+csgo_econ_action_preview\s+[SM]\d+A\d+D\d+$/;
-  if (inspectLink.length > 200 || !INSPECT_RE.test(inspectLink)) {
-    return res.status(400).json({ error: 'Invalid CS2 inspect link' });
-  }
-
-  try {
-    const item = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Inspect request timed out (10s)'));
-      }, 12000);
-
-      csgo.inspectItem(inspectLink, (itemData) => {
-        clearTimeout(timeout);
-        resolve(itemData);
-      });
-    });
-
-    res.json({
-      assetId: item.itemid,
-      defIndex: item.defindex,
-      paintIndex: item.paintindex,
-      floatValue: item.paintwear,
-      paintSeed: item.paintseed,
-      rarity: item.rarity,
-      quality: item.quality,
-      stickers: item.stickers || [],
-      customName: item.customname || null,
-    });
-  } catch (err) {
-    console.error('[API] Inspect error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ── Startup ───────────────────────────────────────────────
 
 async function start() {
-  let refreshToken;
+  // Build the app first so a missing API_KEY fails fast, before any
+  // Steam login happens.
+  const app = createApp({
+    apiKey: API_KEY,
+    allowNoAuth: ALLOW_NO_AUTH,
+    steam: steamAdapter,
+    itemResolver,
+    metrics,
+  });
 
-  // 1. Check env var (remote deployment)
-  if (REFRESH_TOKEN_ENV) {
-    refreshToken = REFRESH_TOKEN_ENV;
-    console.log('[Auth] Using refresh token from environment');
-  }
-  // 2. Check saved file (local dev)
-  else if (fs.existsSync(TOKEN_FILE)) {
-    refreshToken = fs.readFileSync(TOKEN_FILE, 'utf-8').trim();
-    console.log('[Auth] Found saved refresh token file');
-  }
-  // 3. Interactive login (local dev only — needs a terminal)
-  else if (process.stdin.isTTY) {
+  // The saved file wins over the env var: renewals are written to the
+  // file, and once Steam renews a token the old one stops working.
+  let refreshToken = readToken(TOKEN_FILE) || REFRESH_TOKEN_ENV || null;
+  if (!refreshToken) {
+    if (!process.stdin.isTTY) {
+      console.error('[Auth] No refresh token. Run `node index.js` once in a terminal to log in.');
+      process.exit(1);
+    }
     refreshToken = await interactiveLogin();
   }
-  // 4. No token and no way to get one
-  else {
-    console.error('[Auth] No refresh token found.');
-    console.error('       Set REFRESH_TOKEN env var, or run locally first to generate .refresh_token');
-    process.exit(1);
-  }
-
-  // Store token for auto-reconnect on LoggedInElsewhere
   currentRefreshToken = refreshToken;
+  updateTokenExpiryMetric();
 
-  // Initialize item resolver (downloads fresh item definitions)
   await itemResolver.init();
 
-  // Log in to Steam
   console.log('[Steam] Logging in...');
   try {
     await loginWithToken(refreshToken);
   } catch (err) {
-    console.error('[Steam] Login failed:', err.message);
-
-    if (REFRESH_TOKEN_ENV) {
-      // Can't re-auth on remote — exit so the operator knows
-      console.error('[Auth] REFRESH_TOKEN env var may be expired. Generate a new one locally.');
+    console.error(`[Steam] Login failed: ${err.message} (eresult ${err.eresult})`);
+    // Never delete the saved token here: most failures (Steam
+    // maintenance, network blips, rate limits) are transient, and the
+    // token is the one thing that can't be recreated without a Steam
+    // Guard code. Exit so systemd retries; log in by hand if it expired.
+    if (!process.stdin.isTTY) {
+      console.error('[Auth] If the token has expired, stop the service and run `node index.js` over SSH to log in again.');
       process.exit(1);
     }
-
-    // Local dev — try interactive login
-    if (fs.existsSync(TOKEN_FILE)) {
-      fs.unlinkSync(TOKEN_FILE);
-    }
-    console.log('[Auth] Token may be expired. Re-authenticating...');
-    refreshToken = await interactiveLogin();
-    await loginWithToken(refreshToken);
+    currentRefreshToken = await interactiveLogin();
+    updateTokenExpiryMetric();
+    await loginWithToken(currentRefreshToken);
   }
 
-  // GC is now connected on demand by ensureGCConnected() — no
-  // up-front connect, so the VM doesn't accrue CS2 playtime while
-  // it's just sitting idle waiting for requests.
+  // GC is connected on demand by ensureGCConnected(), so the VM
+  // doesn't accrue CS2 playtime while idle.
 
-  // Start HTTP server — bind 0.0.0.0 so it's reachable from outside
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n[Server] Storage service running on port ${PORT}`);
-    console.log(`[Server] Status: http://0.0.0.0:${PORT}/status`);
-    console.log(`[Server] Auth:   ${API_KEY ? 'API key required' : 'OPEN (no API_KEY set)'}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`\n[Server] Storage service running on ${HOST}:${PORT}`);
+    console.log(`[Server] Auth:   ${API_KEY ? 'API key required' : 'OPEN (ALLOW_NO_AUTH=1)'}`);
     console.log(`[Server] GC mode: on-demand (idle release after ${GC_IDLE_MS / 1000}s)\n`);
   });
 }
 
 start().catch((err) => {
-  console.error('Fatal error:', err);
+  console.error('Fatal error:', err.message);
   process.exit(1);
 });

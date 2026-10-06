@@ -34,6 +34,14 @@ const gcConnected = new client.Gauge({
   registers: [register],
 });
 
+// Alert well before this: once the refresh token expires the service
+// can't log in until someone does a manual Steam Guard login.
+const refreshTokenExpiry = new client.Gauge({
+  name: 'cs2_storage_refresh_token_expiry_timestamp_seconds',
+  help: 'Unix time at which the saved Steam refresh token expires',
+  registers: [register],
+});
+
 const gcConnectionsTotal = new client.Counter({
   name: 'cs2_storage_gc_connections_total',
   help: 'Cumulative count of successful GC connection events',
@@ -84,6 +92,7 @@ module.exports = {
   register,
   steamLoggedIn,
   gcConnected,
+  refreshTokenExpiry,
   gcConnectionsTotal,
   gcDisconnectionsTotal,
   httpRequestsTotal,

@@ -4,7 +4,8 @@
   "description": "Local Node.js service for fetching CS2 storage unit contents via Game Coordinator",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "@node-steam/vdf": "^2.2.0",
@@ -14,5 +15,8 @@
     "prom-client": "^15.1.3",
     "steam-session": "^1.8.0",
     "steam-user": "^5.2.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -1,6 +1,10 @@
 # Storage service: HTTPS deployment
 
-The VM currently serves the storage API over plain HTTP, with the
+> **Status: done (May 2026).** The service is live at
+> `https://harshcs2.duckdns.org` and the plain-HTTP port is closed. This
+> guide is kept as the record of how the migration was done.
+
+Before this migration the VM served the storage API over plain HTTP, with the
 API key sent as a request header in cleartext. Anyone on the network
 path between phone and VM (open Wi-Fi, MITM, ISP) can sniff the key
 and replay requests.
