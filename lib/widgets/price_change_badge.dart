@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 /// A small badge showing a percentage change with color coding.
 /// Green for positive, red for negative, grey for zero.
 class PriceChangeBadge extends StatelessWidget {
-  final double percentage;
+  final double? percentage;
   final bool showIcon;
 
   const PriceChangeBadge({
@@ -14,8 +14,9 @@ class PriceChangeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPositive = percentage > 0;
-    final isZero = percentage == 0;
+    final value = percentage;
+    final isPositive = (value ?? 0) > 0;
+    final isZero = value == null || value == 0;
     final color =
         isZero
             ? Colors.grey
@@ -41,7 +42,7 @@ class PriceChangeBadge extends StatelessWidget {
           if (showIcon) Icon(icon, size: 14, color: color),
           if (showIcon) const SizedBox(width: 2),
           Text(
-            '${percentage >= 0 ? '+' : ''}${percentage.toStringAsFixed(1)}%',
+            value == null ? '?' : '${value >= 0 ? '+' : ''}${value.toStringAsFixed(1)}%',
             style: TextStyle(
               color: color,
               fontSize: 12,

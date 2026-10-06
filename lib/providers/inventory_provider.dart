@@ -300,20 +300,26 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
     final firestore = ref.read(firestoreServiceProvider);
     if (!firestore.isAuthenticated) return;
 
+    final requestedSteamId = ref.read(steamIdProvider);
     try {
       final serverPrices = await firestore.loadServerPrices();
       if (serverPrices.isEmpty) return;
 
+      // Merge into the current state after the await, preserving newer floats
+      // and quantities. Ignore responses for an account that has changed.
+      if (!ref.mounted || ref.read(steamIdProvider) != requestedSteamId) return;
+      final currentItems = state.asData?.value;
+      if (currentItems == null) return;
       var anyApplied = false;
-      final updatedItems = items.map((item) {
+      final updatedItems = currentItems.map((item) {
         final sp = serverPrices[item.marketHashName];
         if (sp == null) return item;
 
         final newCurrent = sp.currentPrice ?? item.currentPrice;
         final newCsfloat = sp.csfloatPrice ?? item.csfloatPrice;
-        final newChange = sp.priceChange24h ?? item.priceChange24h;
-        final newChange7d = sp.priceChange7d ?? item.priceChange7d;
-        final newChange30d = sp.priceChange30d ?? item.priceChange30d;
+        final newChange = sp.priceChange24h;
+        final newChange7d = sp.priceChange7d;
+        final newChange30d = sp.priceChange30d;
 
         if (newCurrent != item.currentPrice ||
             newCsfloat != item.csfloatPrice ||
@@ -523,7 +529,7 @@ const moverCategories = [
 /// dollar move = current - baseline. Negative for losers.
 double dollarChange24h(CS2Item item) {
   final pct = item.priceChange24h;
-  if (pct == 0) return 0;
+  if (pct == null || !pct.isFinite || pct <= -100 || pct == 0) return 0;
   final baseline = item.currentPrice / (1 + pct / 100);
   return item.currentPrice - baseline;
 }
@@ -580,7 +586,7 @@ List<CS2Item> _eligibleMovers(List<CS2Item> items, MoversFilter f) {
 /// True if any inventory item has a non-zero 24h change — used to decide
 /// whether to show the Top Movers section (and its controls) at all.
 final hasMoverDataProvider = Provider<bool>((ref) {
-  return ref.watch(mainInventoryProvider).any((i) => i.priceChange24h != 0);
+  return ref.watch(mainInventoryProvider).any((i) => (i.priceChange24h ?? 0) != 0);
 });
 
 /// Top gainers — biggest positive 24h movers, after filters, ranked by
@@ -588,11 +594,11 @@ final hasMoverDataProvider = Provider<bool>((ref) {
 final topGainersProvider = Provider<List<CS2Item>>((ref) {
   final f = ref.watch(moversFilterProvider);
   final gainers = _eligibleMovers(ref.watch(mainInventoryProvider), f)
-      .where((i) => i.priceChange24h > 0)
+      .where((i) => (i.priceChange24h ?? 0) > 0)
       .toList();
   gainers.sort((a, b) => f.rankByDollar
       ? dollarChange24h(b).compareTo(dollarChange24h(a))
-      : b.priceChange24h.compareTo(a.priceChange24h));
+      : (b.priceChange24h ?? 0).compareTo(a.priceChange24h ?? 0));
   return gainers.take(5).toList();
 });
 
@@ -601,10 +607,10 @@ final topGainersProvider = Provider<List<CS2Item>>((ref) {
 final topLosersProvider = Provider<List<CS2Item>>((ref) {
   final f = ref.watch(moversFilterProvider);
   final losers = _eligibleMovers(ref.watch(mainInventoryProvider), f)
-      .where((i) => i.priceChange24h < 0)
+      .where((i) => (i.priceChange24h ?? 0) < 0)
       .toList();
   losers.sort((a, b) => f.rankByDollar
       ? dollarChange24h(a).compareTo(dollarChange24h(b))
-      : a.priceChange24h.compareTo(b.priceChange24h));
+      : (a.priceChange24h ?? 0).compareTo(b.priceChange24h ?? 0));
   return losers.take(5).toList();
 });

@@ -359,9 +359,9 @@ class FirestoreService {
       result[name] = ServerPriceData(
         currentPrice: (data['currentPrice'] as num?)?.toDouble(),
         csfloatPrice: (data['csfloatPrice'] as num?)?.toDouble(),
-        priceChange24h: (data['priceChange24h'] as num?)?.toDouble(),
-        priceChange7d: (data['priceChange7d'] as num?)?.toDouble(),
-        priceChange30d: (data['priceChange30d'] as num?)?.toDouble(),
+        priceChange24h: data['priceHistoryVersion'] == 2 ? (data['priceChange24h'] as num?)?.toDouble() : null,
+        priceChange7d: data['priceHistoryVersion'] == 2 ? (data['priceChange7d'] as num?)?.toDouble() : null,
+        priceChange30d: data['priceHistoryVersion'] == 2 ? (data['priceChange30d'] as num?)?.toDouble() : null,
       );
     }
 

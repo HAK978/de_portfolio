@@ -175,7 +175,7 @@ List<CS2Item> _applyFilters(
     case SortOption.quantityDesc:
       filtered.sort((a, b) => b.quantity.compareTo(a.quantity));
     case SortOption.changeDesc:
-      filtered.sort((a, b) => b.priceChange24h.compareTo(a.priceChange24h));
+      filtered.sort((a, b) => (b.priceChange24h ?? 0).compareTo(a.priceChange24h ?? 0));
   }
 
   return filtered;

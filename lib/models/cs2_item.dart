@@ -3,6 +3,7 @@
 /// In Phase 1 we use mock data; later phases will populate this
 /// from Steam API responses and Firestore documents.
 class CS2Item {
+  static const _unchanged = Object();
   final String id;
   final String name;
   final String weaponType; // "Rifle", "Pistol", "Knife", "Gloves", etc.
@@ -14,9 +15,9 @@ class CS2Item {
   final bool isSouvenir;
   final double currentPrice; // Steam Community Market price
   final double? csfloatPrice; // CSFloat lowest listing price
-  final double priceChange24h; // percentage
-  final double? priceChange7d; // null until the 7-day baseline matures
-  final double? priceChange30d; // null until the 30-day baseline matures
+  final double? priceChange24h; // percentage
+  final double? priceChange7d; // null until 7 days of history are available
+  final double? priceChange30d; // null until 30 days of history are available
   final int quantity;
   final String location; // "inventory", "Storage Unit 1", etc.
   final String imageUrl;
@@ -37,7 +38,7 @@ class CS2Item {
     this.isSouvenir = false,
     required this.currentPrice,
     this.csfloatPrice,
-    this.priceChange24h = 0,
+    this.priceChange24h,
     this.priceChange7d,
     this.priceChange30d,
     this.quantity = 1,
@@ -66,9 +67,9 @@ class CS2Item {
     bool? isSouvenir,
     double? currentPrice,
     double? csfloatPrice,
-    double? priceChange24h,
-    double? priceChange7d,
-    double? priceChange30d,
+    Object? priceChange24h = _unchanged,
+    Object? priceChange7d = _unchanged,
+    Object? priceChange30d = _unchanged,
     int? quantity,
     String? location,
     String? imageUrl,
@@ -89,9 +90,9 @@ class CS2Item {
       isSouvenir: isSouvenir ?? this.isSouvenir,
       currentPrice: currentPrice ?? this.currentPrice,
       csfloatPrice: csfloatPrice ?? this.csfloatPrice,
-      priceChange24h: priceChange24h ?? this.priceChange24h,
-      priceChange7d: priceChange7d ?? this.priceChange7d,
-      priceChange30d: priceChange30d ?? this.priceChange30d,
+      priceChange24h: identical(priceChange24h, _unchanged) ? this.priceChange24h : (priceChange24h as num?)?.toDouble(),
+      priceChange7d: identical(priceChange7d, _unchanged) ? this.priceChange7d : (priceChange7d as num?)?.toDouble(),
+      priceChange30d: identical(priceChange30d, _unchanged) ? this.priceChange30d : (priceChange30d as num?)?.toDouble(),
       quantity: quantity ?? this.quantity,
       location: location ?? this.location,
       imageUrl: imageUrl ?? this.imageUrl,
@@ -140,7 +141,7 @@ class CS2Item {
     isSouvenir: json['isSouvenir'] as bool? ?? false,
     currentPrice: (json['currentPrice'] as num).toDouble(),
     csfloatPrice: (json['csfloatPrice'] as num?)?.toDouble(),
-    priceChange24h: (json['priceChange24h'] as num?)?.toDouble() ?? 0,
+    priceChange24h: (json['priceChange24h'] as num?)?.toDouble(),
     priceChange7d: (json['priceChange7d'] as num?)?.toDouble(),
     priceChange30d: (json['priceChange30d'] as num?)?.toDouble(),
     quantity: json['quantity'] as int? ?? 1,

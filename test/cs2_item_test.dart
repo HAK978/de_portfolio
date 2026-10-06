@@ -212,6 +212,16 @@ void main() {
   });
 
   group('CS2Item.copyWith', () {
+    test('omitted price changes are preserved and explicit null clears them', () {
+      final original = makeItem().copyWith(priceChange24h: 10, priceChange7d: 20, priceChange30d: 30);
+      expect(original.copyWith(quantity: 2).priceChange7d, 20);
+      final cleared = original.copyWith(priceChange24h: null, priceChange7d: null, priceChange30d: null);
+      expect(cleared.priceChange24h, isNull);
+      expect(cleared.priceChange7d, isNull);
+      expect(cleared.priceChange30d, isNull);
+      expect(CS2Item.fromJson(cleared.toJson()).priceChange24h, isNull);
+    });
+
     test('preserves fields that are not overridden', () {
       final original = makeItem(currentPrice: 50.0, quantity: 1);
       final copy = original.copyWith(currentPrice: 75.0);
