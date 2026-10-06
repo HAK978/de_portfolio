@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:de_portfolio/models/cs2_item.dart';
 import 'package:de_portfolio/providers/inventory_provider.dart';
 
-CS2Item item({required double currentPrice, required double change}) => CS2Item(
+CS2Item item({required double currentPrice, required double? change}) => CS2Item(
   id: 'x',
   name: 'Test',
   weaponType: 'Rifle',
@@ -35,6 +35,17 @@ void main() {
     test('negative change: \$90 at -10% means a -\$10 move from \$100', () {
       final d = dollarChange24h(item(currentPrice: 90, change: -10));
       expect(d, closeTo(-10.0, 1e-9));
+    });
+
+    test('unknown change (no price history yet) counts as no move', () {
+      expect(dollarChange24h(item(currentPrice: 50, change: null)), 0);
+    });
+
+    test('a -100% change (bad data) cannot divide by zero', () {
+      // baseline = current / (1 + pct/100) would be infinite at -100%.
+      expect(dollarChange24h(item(currentPrice: 50, change: -100)), 0);
+      expect(dollarChange24h(item(currentPrice: 50, change: -150)), 0);
+      expect(dollarChange24h(item(currentPrice: 50, change: double.nan)), 0);
     });
 
     test('penny item with big percent is a tiny dollar move', () {

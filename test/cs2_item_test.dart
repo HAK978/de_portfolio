@@ -1,10 +1,9 @@
 // Unit tests for the CS2Item data model.
 //
 // CS2Item is the core domain object — every inventory and storage-unit
-// item flows through it. Its JSON contract is also what disk caching
-// and Firestore sync depend on, so regressions here break persistence
-// silently. These tests pin both the JSON parsing/serialization
-// contract and the displayName formatting rules.
+// item flows through it. Its JSON contract is what the disk cache and
+// Firestore sync depend on, so a regression here breaks persistence
+// silently (often only after an app update, when old caches are read).
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:de_portfolio/models/cs2_item.dart';
@@ -49,165 +48,103 @@ CS2Item makeItem({
   individualFloats: individualFloats,
 );
 
+/// The minimal JSON an item needs — what the oldest caches contain.
+Map<String, dynamic> minimalJson() => {
+  'id': 'asset-1',
+  'name': 'AK-47 | Redline',
+  'weaponType': 'Rifle',
+  'skinName': 'Redline',
+  'wear': 'Field-Tested',
+  'rarity': 'Classified',
+  'rarityColor': '#D32CE6',
+  'currentPrice': 12.5,
+  'imageUrl': 'https://example.com/ak.png',
+  'marketHashName': 'AK-47 | Redline (Field-Tested)',
+};
+
 void main() {
   group('CS2Item.fromJson', () {
-    test('parses all required fields', () {
-      final item = CS2Item.fromJson({
-        'id': 'asset-1',
-        'name': 'AK-47 | Redline',
-        'weaponType': 'Rifle',
-        'skinName': 'Redline',
-        'wear': 'Field-Tested',
-        'rarity': 'Classified',
-        'rarityColor': '#D32CE6',
-        'currentPrice': 12.5,
-        'imageUrl': 'https://example.com/ak.png',
-        'marketHashName': 'AK-47 | Redline (Field-Tested)',
-      });
+    test('a minimal (old-version) cache entry gets sensible defaults', () {
+      final item = CS2Item.fromJson(minimalJson());
 
-      expect(item.id, 'asset-1');
-      expect(item.name, 'AK-47 | Redline');
-      expect(item.weaponType, 'Rifle');
-      expect(item.rarity, 'Classified');
-      expect(item.currentPrice, 12.5);
       expect(item.marketHashName, 'AK-47 | Redline (Field-Tested)');
-    });
-
-    test('defaults isStatTrak and isSouvenir to false when omitted', () {
-      final item = CS2Item.fromJson({
-        'id': 'asset-1',
-        'name': 'AK-47 | Redline',
-        'weaponType': 'Rifle',
-        'skinName': 'Redline',
-        'wear': 'Field-Tested',
-        'rarity': 'Classified',
-        'rarityColor': '#D32CE6',
-        'currentPrice': 12.5,
-        'imageUrl': 'https://example.com/ak.png',
-        'marketHashName': 'AK-47 | Redline (Field-Tested)',
-      });
-
+      expect(item.currentPrice, 12.5);
       expect(item.isStatTrak, isFalse);
       expect(item.isSouvenir, isFalse);
-    });
-
-    test('defaults quantity to 1 and location to "inventory"', () {
-      final item = CS2Item.fromJson({
-        'id': 'asset-1',
-        'name': 'AK-47 | Redline',
-        'weaponType': 'Rifle',
-        'skinName': 'Redline',
-        'wear': 'Field-Tested',
-        'rarity': 'Classified',
-        'rarityColor': '#D32CE6',
-        'currentPrice': 12.5,
-        'imageUrl': 'https://example.com/ak.png',
-        'marketHashName': 'AK-47 | Redline (Field-Tested)',
-      });
-
       expect(item.quantity, 1);
       expect(item.location, 'inventory');
+      expect(item.csfloatPrice, isNull);
+      expect(item.priceChange24h, isNull); // unknown, not "0% change"
+      expect(item.individualFloats, isEmpty);
     });
 
-    test('accepts int currentPrice (num.toDouble coercion)', () {
-      // Steam sometimes returns price as integer cents → app converts to
-      // dollars as int. Make sure the num->double cast in fromJson works
-      // for both ints and doubles.
-      final item = CS2Item.fromJson({
-        'id': 'asset-1',
-        'name': 'AK-47 | Redline',
-        'weaponType': 'Rifle',
-        'skinName': 'Redline',
-        'wear': 'Field-Tested',
-        'rarity': 'Classified',
-        'rarityColor': '#D32CE6',
-        'currentPrice': 12, // integer literal, not 12.0
-        'imageUrl': 'https://example.com/ak.png',
-        'marketHashName': 'AK-47 | Redline (Field-Tested)',
-      });
-
+    test('accepts whole-number prices stored as ints', () {
+      // jsonDecode and Firestore both return 12 (int) for 12.0, so a
+      // plain `as double` cast would throw on reload.
+      final item = CS2Item.fromJson({...minimalJson(), 'currentPrice': 12, 'csfloatPrice': 11});
       expect(item.currentPrice, 12.0);
+      expect(item.csfloatPrice, 11.0);
     });
 
-    test('parses nullable optional fields (csfloatPrice, floatValue, collection)', () {
+    test('parses the optional fields', () {
       final item = CS2Item.fromJson({
-        'id': 'asset-1',
-        'name': 'AK-47 | Redline',
-        'weaponType': 'Rifle',
-        'skinName': 'Redline',
-        'wear': 'Field-Tested',
-        'rarity': 'Classified',
-        'rarityColor': '#D32CE6',
-        'currentPrice': 12.5,
+        ...minimalJson(),
         'csfloatPrice': 11.20,
         'floatValue': 0.18,
+        'individualFloats': [0.18, 0.2],
         'collection': 'The Phoenix Collection',
-        'imageUrl': 'https://example.com/ak.png',
-        'marketHashName': 'AK-47 | Redline (Field-Tested)',
+        'priceChange24h': -2.5,
       });
 
       expect(item.csfloatPrice, 11.20);
       expect(item.floatValue, 0.18);
+      expect(item.individualFloats, [0.18, 0.2]);
       expect(item.collection, 'The Phoenix Collection');
+      expect(item.priceChange24h, -2.5);
     });
   });
 
-  group('CS2Item JSON round-trip', () {
-    test('toJson + fromJson preserves every field', () {
-      final original = makeItem(
-        isStatTrak: true,
-        csfloatPrice: 11.20,
-        floatValue: 0.07,
-        collection: 'The Bravo Collection',
-        individualFloats: [0.06, 0.08, 0.09],
-        quantity: 3,
-      );
+  test('toJson + fromJson round-trips every field', () {
+    final original = makeItem(
+      isStatTrak: true,
+      csfloatPrice: 11.20,
+      floatValue: 0.07,
+      collection: 'The Bravo Collection',
+      individualFloats: [0.06, 0.08, 0.09],
+      quantity: 3,
+    ).copyWith(priceChange24h: 1.5, priceChange7d: -3.0, priceChange30d: 12.0, location: 'Storage Unit 1');
 
-      final json = original.toJson();
-      final restored = CS2Item.fromJson(json);
-
-      expect(restored.id, original.id);
-      expect(restored.marketHashName, original.marketHashName);
-      expect(restored.isStatTrak, original.isStatTrak);
-      expect(restored.currentPrice, original.currentPrice);
-      expect(restored.csfloatPrice, original.csfloatPrice);
-      expect(restored.floatValue, original.floatValue);
-      expect(restored.collection, original.collection);
-      expect(restored.individualFloats, original.individualFloats);
-      expect(restored.quantity, original.quantity);
-    });
+    // Comparing the full maps catches a field added to toJson but
+    // forgotten in fromJson (or vice versa).
+    expect(CS2Item.fromJson(original.toJson()).toJson(), original.toJson());
   });
 
   group('CS2Item.displayName', () {
-    test('plain item returns "<name> (<wear>)"', () {
-      final item = makeItem();
-      expect(item.displayName, 'AK-47 | Redline (Field-Tested)');
+    test('plain item is "<name> (<wear>)"', () {
+      expect(makeItem().displayName, 'AK-47 | Redline (Field-Tested)');
     });
 
-    test('StatTrak item prefixes with "StatTrak™ "', () {
-      final item = makeItem(isStatTrak: true);
-      expect(item.displayName, 'StatTrak™ AK-47 | Redline (Field-Tested)');
+    test('names from Steam already carry StatTrak/Souvenir: no double prefix', () {
+      // Real shapes from the Steam inventory API.
+      final stattrak = makeItem(name: 'StatTrak™ AUG | Chameleon', wear: 'Factory New', isStatTrak: true);
+      final souvenir = makeItem(name: 'Souvenir PP-Bizon | Anolis', isSouvenir: true);
+      expect(stattrak.displayName, 'StatTrak™ AUG | Chameleon (Factory New)');
+      expect(souvenir.displayName, 'Souvenir PP-Bizon | Anolis (Field-Tested)');
     });
 
-    test('Souvenir item prefixes with "Souvenir "', () {
-      final item = makeItem(isSouvenir: true);
-      expect(item.displayName, 'Souvenir AK-47 | Redline (Field-Tested)');
-    });
-
-    test('item with no wear omits the wear suffix entirely', () {
-      // Music kits, stickers, agents, etc. have no wear value.
-      final item = makeItem(
-        name: 'Music Kit | Daniel Sadowski, Crimson Assault',
-        wear: null,
+    test('adds a missing prefix, keeping the knife star first', () {
+      expect(makeItem(isStatTrak: true).displayName, 'StatTrak™ AK-47 | Redline (Field-Tested)');
+      expect(makeItem(isSouvenir: true).displayName, 'Souvenir AK-47 | Redline (Field-Tested)');
+      expect(
+        makeItem(name: '★ Karambit | Doppler', wear: 'Factory New', isStatTrak: true).displayName,
+        '★ StatTrak™ Karambit | Doppler (Factory New)',
       );
-      expect(item.displayName, 'Music Kit | Daniel Sadowski, Crimson Assault');
     });
 
-    test('StatTrak prefix wins over Souvenir if both somehow true', () {
-      // Real items can't be both, but the formatter shouldn't double-prefix.
-      final item = makeItem(isStatTrak: true, isSouvenir: true);
-      expect(item.displayName.startsWith('StatTrak™ '), isTrue);
-      expect(item.displayName.contains('Souvenir'), isFalse);
+    test('items without wear have no suffix', () {
+      // Music kits, stickers, agents, etc. have no wear value.
+      final kit = makeItem(name: 'Music Kit | Daniel Sadowski, Crimson Assault', wear: null);
+      expect(kit.displayName, 'Music Kit | Daniel Sadowski, Crimson Assault');
     });
   });
 
@@ -227,16 +164,7 @@ void main() {
       final copy = original.copyWith(currentPrice: 75.0);
 
       expect(copy.currentPrice, 75.0);
-      expect(copy.quantity, original.quantity);
-      expect(copy.marketHashName, original.marketHashName);
-      expect(copy.rarity, original.rarity);
-    });
-
-    test('does not mutate the original', () {
-      final original = makeItem(currentPrice: 50.0);
-      original.copyWith(currentPrice: 999.0);
-
-      expect(original.currentPrice, 50.0);
+      expect(copy.toJson()..remove('currentPrice'), original.toJson()..remove('currentPrice'));
     });
   });
 }

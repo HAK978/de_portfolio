@@ -156,14 +156,19 @@ class CS2Item {
   );
 
   /// Full display name including StatTrak/Souvenir prefix and wear.
+  ///
+  /// Names from Steam and the storage VM already carry the prefix
+  /// ("StatTrak\u2122 AUG | Chameleon"), so it's only added when missing.
+  /// Knives keep the star first, as on the market: "\u2605 StatTrak\u2122 Karambit".
   String get displayName {
-    final prefix =
-        isStatTrak
-            ? 'StatTrak\u2122 '
-            : isSouvenir
-            ? 'Souvenir '
-            : '';
-    final wearSuffix = wear != null ? ' ($wear)' : '';
-    return '$prefix$name$wearSuffix';
+    var base = name;
+    if (isStatTrak && !base.contains('StatTrak\u2122')) {
+      base = base.startsWith('\u2605 ')
+          ? '\u2605 StatTrak\u2122 ${base.substring(2)}'
+          : 'StatTrak\u2122 $base';
+    } else if (isSouvenir && !base.startsWith('Souvenir ')) {
+      base = 'Souvenir $base';
+    }
+    return wear != null ? '$base ($wear)' : base;
   }
 }
