@@ -1,14 +1,12 @@
 name: Deploy storage-service
 
-# Pulls the latest storage-service code onto the GCE VM, installs prod
-# deps, and restarts the systemd unit. Triggers automatically when
-# storage-service/ changes land on main, or manually via the "Run
-# workflow" button.
+# Tests the storage-service, then pulls it onto the GCE VM, installs
+# prod deps, and restarts the systemd unit. Runs when storage-service/
+# changes land on main, or manually via "Run workflow".
 #
 # Required GitHub Secrets:
-#   VM_SSH_PRIVATE_KEY  — the OpenSSH private key that authenticates
-#                         the `harsh` user on cs2-storage.duckdns.org
-#                         (gcloud-managed key, ~/.ssh/google_compute_engine)
+#   VM_SSH_PRIVATE_KEY  — OpenSSH private key for the `harsh` user on
+#                         harshcs2.duckdns.org
 
 on:
   push:
@@ -18,22 +16,47 @@ on:
       - '.github/workflows/deploy-storage.yml'
   workflow_dispatch:
 
-# Only one deploy at a time; cancel an in-flight run if a newer push lands.
+permissions:
+  contents: read
+
+# One deploy at a time. A newer push waits for the running deploy
+# instead of cancelling it halfway through a restart.
 concurrency:
   group: deploy-storage-vm
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: storage-service tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: storage-service
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22' # matches the VM
+          cache: npm
+          cache-dependency-path: storage-service/package-lock.json
+      - run: npm ci
+      - run: npm test
+
   deploy:
     name: SSH + git pull + restart
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to cs2-storage VM
-        uses: appleboy/ssh-action@v1
+        # Pinned to a commit (v1.2.5): this step holds the VM's SSH key.
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2
         with:
           host: harshcs2.duckdns.org
           username: harsh
           key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          # The VM's ECDSA host key (the type the action negotiates).
+          # Refuses to connect if DNS ever points somewhere else.
+          fingerprint: SHA256:GLwZe4euzM0Z+9fOWlyZGHB99N07OJnKBtMwJFfKt+o
           script_stop: true
           script: |
             set -euo pipefail
@@ -52,6 +75,16 @@ jobs:
 
             echo "::group::Restart cs2-storage service"
             sudo systemctl restart cs2-storage
-            sleep 3
-            sudo systemctl is-active cs2-storage
+            # Healthy = the API answers (401 without a key). The service only
+            # starts listening after its Steam login succeeds.
+            code=000
+            for i in $(seq 1 45); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3456/status || true)
+              if [ "$code" = "401" ]; then echo "Healthy after ~$((i * 2))s"; break; fi
+              sleep 2
+            done
+            if [ "$code" != "401" ]; then
+              sudo journalctl -u cs2-storage -n 40 --no-pager
+              exit 1
+            fi
             echo "::endgroup::"

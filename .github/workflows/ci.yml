@@ -5,13 +5,16 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   flutter-analyze:
-    name: Flutter analyze
+    name: Flutter analyze + tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: '3.38.2'
           channel: stable
