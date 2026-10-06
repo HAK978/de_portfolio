@@ -1,7 +1,8 @@
 // Unit tests for the marketable-item filtering used during price
 // fetching. A regression here means we either spam Steam Market for
-// items it doesn't price (Extraordinary medals, the Valve music kit)
-// — wasting API budget — or silently drop items that should be priced.
+// items it doesn't price (service medals and coins, the Valve music
+// kit) — wasting API budget — or silently drop items that should be
+// priced (gloves share the medals' "Extraordinary" rarity).
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:de_portfolio/models/cs2_item.dart';
@@ -40,16 +41,41 @@ void main() {
       expect(isMarketable(makeItem(rarity: 'Classified')), isTrue);
     });
 
-    test('returns false for Extraordinary rarity items (service medals, pins)', () {
-      // CS2 service medals and operation pins use the Extraordinary
-      // rarity tier and are never on the public Steam Market.
-      final medal = makeItem(
-        name: '5 Year Veteran Coin',
+    test('returns false for service medals and coins (Extraordinary, no ★)', () {
+      // Coins, medals and badges use the Extraordinary rarity tier and
+      // are never on the Steam Market.
+      for (final name in ['5 Year Veteran Coin', 'Paris 2023 Gold Coin', '2025 Service Medal']) {
+        final medal = makeItem(
+          name: name,
+          weaponType: 'Collectible',
+          rarity: 'Extraordinary',
+          marketHashName: name,
+          wear: null,
+        );
+        expect(isMarketable(medal), isFalse, reason: name);
+      }
+    });
+
+    test('returns true for gloves, which share the Extraordinary rarity', () {
+      // Regression: every glove was skipped because only the rarity was
+      // checked. Gloves are marketable and carry the ★ prefix.
+      final gloves = makeItem(
+        name: '★ Sport Gloves | Vice',
+        weaponType: 'Gloves',
         rarity: 'Extraordinary',
-        marketHashName: '5 Year Veteran Coin',
-        wear: null,
+        marketHashName: '★ Sport Gloves | Vice (Field-Tested)',
       );
-      expect(isMarketable(medal), isFalse);
+      expect(isMarketable(gloves), isTrue);
+    });
+
+    test('returns true for knives (★ Covert)', () {
+      final knife = makeItem(
+        name: '★ Karambit | Doppler',
+        weaponType: 'Knife',
+        rarity: 'Covert',
+        marketHashName: '★ StatTrak™ Karambit | Doppler (Factory New)',
+      );
+      expect(isMarketable(knife), isTrue);
     });
 
     test('returns false for the Valve-issued music kit', () {
@@ -76,13 +102,6 @@ void main() {
       expect(isMarketable(kit), isTrue);
     });
 
-    test('rarity check is case-sensitive (Steam tags are canonical)', () {
-      // Steam tags use the exact casing "Extraordinary". A typo like
-      // 'EXTRAORDINARY' should not match — Steam will never produce it,
-      // and matching it would mask real data-shape regressions.
-      final item = makeItem(rarity: 'EXTRAORDINARY');
-      expect(isMarketable(item), isTrue);
-    });
   });
 
   group('getMarketableNames', () {

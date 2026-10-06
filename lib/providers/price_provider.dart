@@ -63,8 +63,12 @@ class PriceFetchState {
 /// wakelock when all are done.
 /// Items that can't be sold on the market — skip these during price fetch.
 bool isMarketable(CS2Item item) {
-  // Extraordinary/Collectible items (service medals, pins, etc.)
-  if (item.rarity == 'Extraordinary') return false;
+  // Service medals, coins and badges have "Extraordinary" rarity and are
+  // never on the market. Gloves share that rarity but are marketable;
+  // they (like knives) carry the ★ prefix, so let those through.
+  if (item.rarity == 'Extraordinary' && !item.marketHashName.startsWith('★')) {
+    return false;
+  }
 
   // Specific non-marketable items
   const nonMarketable = [
