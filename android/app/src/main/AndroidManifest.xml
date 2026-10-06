@@ -1,9 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Backups are off (Android 11 and lower: allowBackup/fullBackupContent;
+         12+: dataExtractionRules). See res/xml/data_extraction_rules.xml. -->
     <application
-        android:label="de_portfolio"
+        android:label="CS2 Portfolio"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"
