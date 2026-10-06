@@ -37,25 +37,60 @@ class PriceHistoryPoint {
 /// of [date_string, price, volume] entries. The date string format is
 /// "Mar 20 2026 01: +0" (hour-level granularity).
 ///
-/// Steam returns prices in the account's local currency (INR for Indian
-/// accounts) regardless of the currency parameter. We convert to USD
-/// using a live exchange rate.
+/// Prices come back in the Steam account's wallet currency, whatever
+/// `currency` the request asks for. The response's price_prefix /
+/// price_suffix say which currency that is, and prices are converted to
+/// USD with a live exchange rate.
 class PriceHistoryService {
   static const _baseUrl =
       'https://steamcommunity.com/market/pricehistory/';
+  static const _ratesUrl = 'https://open.er-api.com/v6/latest/USD';
   static const _cacheDir = 'price_history';
   static const _cacheMaxAge = Duration(hours: 6);
-  static const _cacheVersion = 5; // bump to invalidate old caches (now stores hourly)
-  static const _exchangeRateCacheFile = 'exchange_rate.json';
+  // Bump to invalidate old caches. v6: v5 entries assumed an INR wallet
+  // and divided USD prices by ~85 for everyone else.
+  static const _cacheVersion = 6;
+  static const _exchangeRateCacheFile = 'exchange_rates.json';
   static const _exchangeRateCacheMaxAge = Duration(hours: 24);
+  static const _requestTimeout = Duration(seconds: 15);
+
+  /// Used only if the rates API is unreachable, so the owner's INR
+  /// wallet still gets an approximate chart.
+  static const _fallbackInrPerUsd = 85.0;
 
   /// Steam login cookie — required for price history endpoint.
   final String? steamLoginCookie;
+  final http.Client? _client;
 
-  /// Cached exchange rate (INR per 1 USD).
-  static double? _cachedInrToUsdRate;
+  /// Units of each currency per 1 USD, shared across instances.
+  static Map<String, double>? _cachedRates;
 
-  PriceHistoryService({this.steamLoginCookie});
+  PriceHistoryService({this.steamLoginCookie, http.Client? client})
+      : _client = client;
+
+  Future<http.Response> _get(Uri uri, {Map<String, String>? headers}) =>
+      (_client?.get(uri, headers: headers) ?? http.get(uri, headers: headers))
+          .timeout(_requestTimeout);
+
+  @visibleForTesting
+  static void clearRateCache() => _cachedRates = null;
+
+  /// ISO code for Steam's currency symbols, or null if unknown or
+  /// ambiguous (e.g. "¥" is both CNY and JPY).
+  @visibleForTesting
+  static String? currencyFromSymbols(String? prefix, String? suffix) {
+    const byPrefix = {
+      r'$': 'USD', 'USD': 'USD', '₹': 'INR', '£': 'GBP', r'CDN$': 'CAD',
+      r'A$': 'AUD', r'NZ$': 'NZD', r'R$': 'BRL', r'Mex$': 'MXN',
+      r'S$': 'SGD', r'HK$': 'HKD', '₩': 'KRW', '₺': 'TRY', '₴': 'UAH',
+    };
+    const bySuffix = {'€': 'EUR', 'pуб.': 'RUB', 'zł': 'PLN', '₸': 'KZT'};
+    final p = (prefix ?? '').trim();
+    final s = (suffix ?? '').trim();
+    if (p.isNotEmpty) return byPrefix[p];
+    if (s.isNotEmpty) return bySuffix[s];
+    return null;
+  }
 
   /// Validates the Steam login cookie by making a test request.
   /// Returns true if the cookie is accepted, false if expired/invalid.
@@ -70,9 +105,9 @@ class PriceHistoryService {
         'market_hash_name': 'AK-47 | Redline (Field-Tested)',
       });
 
-      final response = await http.get(uri, headers: {
+      final response = await _get(uri, headers: {
         'Cookie': 'steamLoginSecure=$steamLoginCookie',
-      }).timeout(const Duration(seconds: 10));
+      });
 
       if (response.statusCode != 200) return false;
 
@@ -84,83 +119,73 @@ class PriceHistoryService {
     }
   }
 
-  /// Fetches the INR→USD exchange rate.
-  /// Returns how many INR = 1 USD (e.g. ~83.5).
-  /// Caches to disk for 24 hours.
-  Future<double?> _getInrPerUsd() async {
-    // In-memory cache
-    if (_cachedInrToUsdRate != null) return _cachedInrToUsdRate;
+  /// How many units of [currency] make 1 USD, or null if unknown.
+  Future<double?> _unitsPerUsd(String currency) async {
+    if (currency == 'USD') return 1.0;
+    final rates = await _rates();
+    return rates?[currency] ??
+        (currency == 'INR' ? _fallbackInrPerUsd : null);
+  }
 
-    // Disk cache
+  /// USD-based exchange rates, cached in memory and on disk for 24 hours.
+  Future<Map<String, double>?> _rates() async {
+    if (_cachedRates != null) return _cachedRates;
+
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/$_exchangeRateCacheFile');
       if (file.existsSync()) {
         final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-        final timestamp = data['timestamp'] as int? ?? 0;
-        final cacheTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
-        if (DateTime.now().difference(cacheTime) < _exchangeRateCacheMaxAge) {
-          _cachedInrToUsdRate = (data['rate'] as num).toDouble();
-          debugPrint('Exchange rate from cache: $_cachedInrToUsdRate INR/USD');
-          return _cachedInrToUsdRate;
+        final saved = DateTime.fromMillisecondsSinceEpoch(data['timestamp'] as int? ?? 0);
+        if (DateTime.now().difference(saved) < _exchangeRateCacheMaxAge) {
+          return _cachedRates = _parseRates(data['rates']);
         }
       }
     } catch (_) {}
 
-    // Fetch from API
     try {
-      final response = await http.get(
-        Uri.parse('https://open.er-api.com/v6/latest/USD'),
-      ).timeout(const Duration(seconds: 10));
+      final response = await _get(Uri.parse(_ratesUrl));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final rates = data['rates'] as Map<String, dynamic>?;
-        if (rates != null && rates.containsKey('INR')) {
-          _cachedInrToUsdRate = (rates['INR'] as num).toDouble();
-          debugPrint('Exchange rate fetched: $_cachedInrToUsdRate INR/USD');
-
-          // Save to disk
+        final rates = _parseRates(data['rates']);
+        if (rates.isNotEmpty) {
+          _cachedRates = rates;
           try {
             final dir = await getApplicationDocumentsDirectory();
-            final file = File('${dir.path}/$_exchangeRateCacheFile');
-            await file.writeAsString(jsonEncode({
+            await File('${dir.path}/$_exchangeRateCacheFile').writeAsString(jsonEncode({
               'timestamp': DateTime.now().millisecondsSinceEpoch,
-              'rate': _cachedInrToUsdRate,
+              'rates': rates,
             }));
           } catch (_) {}
-
-          return _cachedInrToUsdRate;
+          return rates;
         }
       }
     } catch (e) {
       debugPrint('Exchange rate fetch error: $e');
     }
-
-    // Fallback rate if API fails
-    debugPrint('Using fallback exchange rate: 85.0 INR/USD');
-    return 85.0;
+    return null;
   }
+
+  static Map<String, double> _parseRates(Object? raw) => {
+        if (raw is Map)
+          for (final entry in raw.entries)
+            if (entry.key is String && entry.value is num && (entry.value as num) > 0)
+              entry.key as String: (entry.value as num).toDouble(),
+      };
 
   /// Fetches price history for an item.
   ///
-  /// Returns a list of hourly price points in USD. The chart widget
-  /// handles aggregation to daily when appropriate.
+  /// Returns hourly price points in USD (the chart widget aggregates to
+  /// daily when appropriate), or null if unavailable — including when
+  /// the wallet currency can't be converted.
   Future<List<PriceHistoryPoint>?> fetchHistory(String marketHashName) async {
-    debugPrint('FETCH_HISTORY called for: $marketHashName');
-    // Check cache first
     final cached = await _loadFromCache(marketHashName);
-    if (cached != null) {
-      debugPrint('FETCH_HISTORY using cache for: $marketHashName (${cached.length} points, last price=${cached.last.price})');
-      return cached;
-    }
-    debugPrint('FETCH_HISTORY cache miss, fetching from Steam...');
+    if (cached != null) return cached;
 
     if (steamLoginCookie == null || steamLoginCookie!.isEmpty) {
-      debugPrint('FETCH_HISTORY FAILED: No Steam login cookie');
+      debugPrint('Price history needs a Steam login cookie');
       return null;
     }
-
-    debugPrint('FETCH_HISTORY cookie: present');
 
     final uri = Uri.parse(_baseUrl).replace(queryParameters: {
       'appid': '730',
@@ -169,68 +194,48 @@ class PriceHistoryService {
     });
 
     try {
-      final response = await http.get(uri, headers: {
+      final response = await _get(uri, headers: {
         'Cookie': 'steamLoginSecure=$steamLoginCookie',
       });
 
       if (response.statusCode != 200) {
-        debugPrint('FETCH_HISTORY HTTP ${response.statusCode} for: $marketHashName');
+        debugPrint('Price history HTTP ${response.statusCode} for: $marketHashName');
         return null;
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
-
-      if (data['success'] != true) {
-        debugPrint('FETCH_HISTORY success=false for: $marketHashName');
-        return null;
-      }
+      if (data['success'] != true) return null;
 
       final prices = data['prices'] as List<dynamic>?;
-      if (prices == null || prices.isEmpty) {
-        debugPrint('FETCH_HISTORY no data for: $marketHashName');
+      if (prices == null || prices.isEmpty) return null;
+
+      final prefix = data['price_prefix'] as String?;
+      final suffix = data['price_suffix'] as String?;
+      final currency = currencyFromSymbols(prefix, suffix);
+      final unitsPerUsd = currency == null ? null : await _unitsPerUsd(currency);
+      if (unitsPerUsd == null) {
+        // Showing unconverted prices as dollars would be wrong; show nothing.
+        debugPrint('Price history: unsupported wallet currency ("$prefix", "$suffix")');
         return null;
       }
 
-      // Get exchange rate for INR → USD conversion
-      final inrPerUsd = await _getInrPerUsd();
-      final conversionRate = inrPerUsd ?? 85.0;
-
-      // Parse raw data: each entry is ["Mar 20 2026 01: +0", 3.50, "150"]
-      // Steam returns prices in account currency (INR), convert to USD
+      // Each entry is ["Mar 20 2026 01: +0", 3.50, "150"].
       final points = <PriceHistoryPoint>[];
       for (final entry in prices) {
-        final list = entry as List<dynamic>;
-        if (list.length < 3) continue;
-
-        final dateStr = list[0] as String;
-        final rawPrice = (list[1] as num).toDouble();
-        final priceUsd = rawPrice / conversionRate;
-        final volume = int.tryParse(list[2].toString()) ?? 0;
-
-        final date = _parseSteamDate(dateStr);
-        if (date != null) {
-          points.add(PriceHistoryPoint(
-            date: date,
-            price: priceUsd,
-            volume: volume,
-          ));
-        }
+        if (entry is! List || entry.length < 3 || entry[1] is! num) continue;
+        final rawDate = entry[0];
+        final date = rawDate is String ? _parseSteamDate(rawDate) : null;
+        if (date == null) continue;
+        points.add(PriceHistoryPoint(
+          date: date,
+          price: (entry[1] as num).toDouble() / unitsPerUsd,
+          volume: int.tryParse(entry[2].toString()) ?? 0,
+        ));
       }
+      if (points.isEmpty) return null;
 
-      // Debug: log first and last raw prices to verify values
-      if (points.isNotEmpty) {
-        debugPrint('PRICES (USD) $marketHashName: '
-            'first=${points.first.price.toStringAsFixed(2)}, '
-            'last=${points.last.price.toStringAsFixed(2)}, '
-            'count=${points.length} hourly points');
-      }
-
-      // Sort chronologically
       points.sort((a, b) => a.date.compareTo(b.date));
-
-      // Cache the hourly result (already in USD)
       await _saveToCache(marketHashName, points);
-
       return points;
     } catch (e) {
       debugPrint('Error fetching price history for $marketHashName: $e');
@@ -238,35 +243,30 @@ class PriceHistoryService {
     }
   }
 
-  /// Parses Steam's date format: "Mar 20 2026 01: +0"
-  DateTime? _parseSteamDate(String dateStr) {
-    try {
-      // Format: "Mon DD YYYY HH: +0"
-      // Remove the ": +0" suffix and parse
-      final cleaned = dateStr.replaceAll(RegExp(r':\s*\+\d+$'), '').trim();
+  /// Parses Steam's date format: "Mar 20 2026 01: +0" (UTC).
+  static DateTime? _parseSteamDate(String dateStr) {
+    // Remove the ": +0" suffix, leaving "Mon DD YYYY HH".
+    final cleaned = dateStr.replaceAll(RegExp(r':\s*\+\d+$'), '').trim();
 
-      const months = {
-        'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4,
-        'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8,
-        'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
-      };
+    const months = {
+      'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4,
+      'May': 5, 'Jun': 6, 'Jul': 7, 'Aug': 8,
+      'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+    };
 
-      final parts = cleaned.split(' ');
-      if (parts.length < 4) return null;
+    final parts = cleaned.split(' ');
+    if (parts.length < 4) return null;
 
-      final month = months[parts[0]];
-      final day = int.tryParse(parts[1]);
-      final year = int.tryParse(parts[2]);
-      final hour = int.tryParse(parts[3]);
+    final month = months[parts[0]];
+    final day = int.tryParse(parts[1]);
+    final year = int.tryParse(parts[2]);
+    final hour = int.tryParse(parts[3]);
 
-      if (month == null || day == null || year == null || hour == null) {
-        return null;
-      }
-
-      return DateTime.utc(year, month, day, hour);
-    } catch (e) {
+    if (month == null || day == null || year == null || hour == null) {
       return null;
     }
+
+    return DateTime.utc(year, month, day, hour);
   }
 
   // ── Caching ──────────────────────────────────────────────────
@@ -314,10 +314,7 @@ class PriceHistoryService {
 
       // Reject old cache versions (corrupted data from earlier bugs)
       final version = data['version'] as int? ?? 0;
-      if (version < _cacheVersion) {
-        debugPrint('CACHE rejected old version ($version < $_cacheVersion) for: $marketHashName');
-        return null;
-      }
+      if (version < _cacheVersion) return null;
 
       final timestamp = data['timestamp'] as int? ?? 0;
       final cacheTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
@@ -325,12 +322,9 @@ class PriceHistoryService {
         return null;
       }
 
-      final points = (data['points'] as List<dynamic>)
+      return (data['points'] as List<dynamic>)
           .map((p) => PriceHistoryPoint.fromJson(p as Map<String, dynamic>))
           .toList();
-
-      debugPrint('Loaded ${points.length} cached history points for: $marketHashName');
-      return points;
     } catch (e) {
       debugPrint('Error loading history cache for $marketHashName: $e');
       return null;
