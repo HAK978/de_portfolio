@@ -57,7 +57,7 @@ jobs:
           # The VM's ECDSA host key (the type the action negotiates).
           # Refuses to connect if DNS ever points somewhere else.
           fingerprint: SHA256:GLwZe4euzM0Z+9fOWlyZGHB99N07OJnKBtMwJFfKt+o
-          script_stop: true
+          # Fails fast via `set -euo pipefail` (v1 dropped script_stop).
           script: |
             set -euo pipefail
             REPO=/home/harshavinashkute/de_portfolio
