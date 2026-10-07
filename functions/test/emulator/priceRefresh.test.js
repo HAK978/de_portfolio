@@ -18,6 +18,8 @@ before(() => {
     const u = new URL(String(url));
     const name = u.searchParams.get('market_hash_name');
     if (u.hostname === 'steamcommunity.com') {
+      // Steam answers 429 to Node's default User-Agent, so the job must identify itself.
+      assert.ok(init.headers['User-Agent'].startsWith('CS2PortfolioManager/'), 'Steam request must identify the app');
       if (name === 'Unlisted Item') return Response.json({success: false});
       return Response.json({success: true, lowest_price: '$1,100.00'});
     }
@@ -70,8 +72,11 @@ test('refresh writes prices and changes to prices/, samples to priceHistory/', a
 
   const meta = (await db.doc('meta/priceRefresh').get()).data();
   assert.deepEqual(
-    {updated: meta.updated, skipped: meta.skipped, total: meta.total, unreached: meta.unreached},
-    {updated: 1, skipped: 2, total: 3, unreached: 0},
+    {
+      updated: meta.updated, skipped: meta.skipped, total: meta.total, unreached: meta.unreached,
+      steamBlocked: meta.steamBlocked, steamSkipped: meta.steamSkipped,
+    },
+    {updated: 1, skipped: 2, total: 3, unreached: 0, steamBlocked: 0, steamSkipped: 0},
   );
   assert.equal(typeof meta.cursor, 'string');
 });

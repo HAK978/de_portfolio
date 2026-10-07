@@ -5,6 +5,7 @@ import {defineSecret} from "firebase-functions/params";
 import {LOGIN_TTL_MS, newSteamLogin, sessionKey, verifySteamAssertion} from "./steamAuth";
 import {updatePriceHistory} from "./priceHistory";
 import {orderAfterCursor} from "./cursor";
+import {BlockBreaker, fetchSteamPrice} from "./steamMarket";
 
 admin.initializeApp();
 
@@ -15,44 +16,6 @@ const csfloatApiKey = defineSecret("CSFLOAT_API_KEY");
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Parses a USD price string from the Steam Market (e.g. "$1,234.96")
- * into a number. Returns null for missing/zero/unparseable values.
- */
-function parseUsdPrice(raw: string | undefined): number | null {
-  if (!raw) return null;
-  // Strip everything except digits and the decimal point ($ and the
-  // thousands comma both go). USD format uses "." as the decimal sep.
-  const cleaned = raw.replace(/[^0-9.]/g, "");
-  const n = parseFloat(cleaned);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-/**
- * Fetches the lowest Steam Market price for an item via priceoverview.
- * One 429-retry after a 5s wait. Returns dollars, or null if no listing.
- */
-async function fetchSteamPrice(marketHashName: string): Promise<number | null> {
-  const url = "https://steamcommunity.com/market/priceoverview/" +
-    `?appid=730&currency=1&market_hash_name=${encodeURIComponent(marketHashName)}`;
-  try {
-    let res = await fetch(url, {signal: AbortSignal.timeout(15_000)});
-    if (res.status === 429) {
-      await sleep(5000);
-      res = await fetch(url, {signal: AbortSignal.timeout(15_000)});
-    }
-    if (!res.ok) return null;
-    const data = await res.json() as {
-      success?: boolean; lowest_price?: string; median_price?: string;
-    };
-    if (data.success !== true) return null;
-    return parseUsdPrice(data.lowest_price ?? data.median_price);
-  } catch (e) {
-    console.warn(`Steam price fetch failed for "${marketHashName}":`, e);
-    return null;
-  }
-}
 
 /**
  * Fetches the lowest CSFloat listing price (cents -> dollars). Honors
@@ -196,6 +159,11 @@ export const updatePriceChanges = onSchedule(
     let csfloatOk = 0;
     let skipped = 0;
     let unreached = 0;
+    // What Steam did this run, so a block shows up in the stats instead of
+    // silently producing no prices.
+    let steamBlocked = 0;
+    let steamSkipped = 0;
+    const steamBreaker = new BlockBreaker();
 
     const metaRef = db.collection("meta").doc("priceRefresh");
     const cursor = (await metaRef.get()).data()?.cursor;
@@ -220,10 +188,17 @@ export const updatePriceChanges = onSchedule(
         continue;
       }
 
-      const [steamPrice, csfloatPrice] = await Promise.all([
-        fetchSteamPrice(name),
+      const attemptSteam = steamBreaker.shouldAttempt();
+      if (!attemptSteam) steamSkipped++;
+      const [steam, csfloatPrice] = await Promise.all([
+        attemptSteam ? fetchSteamPrice(name) : Promise.resolve(null),
         fetchCsfloatPrice(name, apiKey),
       ]);
+      if (steam) {
+        steamBreaker.record(steam.outcome);
+        if (steam.outcome === "blocked") steamBlocked++;
+      }
+      const steamPrice = steam?.price ?? null;
 
       if (steamPrice === null && csfloatPrice === null) {
         skipped++;
@@ -282,6 +257,8 @@ export const updatePriceChanges = onSchedule(
       csfloatOk,
       skipped,
       unreached,
+      steamBlocked,
+      steamSkipped,
       total: snapshot.size,
       cursor: lastAttempted,
     }, {merge: true});
@@ -289,6 +266,7 @@ export const updatePriceChanges = onSchedule(
     console.log(
       `updatePriceChanges: ${updated} updated ` +
       `(steam ${steamOk}, csfloat ${csfloatOk}), ` +
+      `steam refused ${steamBlocked}, steam skipped ${steamSkipped}, ` +
       `${skipped} skipped, ${unreached} unreached of ${snapshot.size}`
     );
   }
