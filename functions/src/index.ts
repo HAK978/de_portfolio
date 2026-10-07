@@ -1,4 +1,6 @@
-import * as admin from "firebase-admin";
+import {initializeApp} from "firebase-admin/app";
+import {getAuth} from "firebase-admin/auth";
+import {FieldValue, Timestamp, getFirestore} from "firebase-admin/firestore";
 import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
@@ -7,7 +9,7 @@ import {updatePriceHistory} from "./priceHistory";
 import {orderAfterCursor} from "./cursor";
 import {BlockBreaker, fetchSteamPrice} from "./steamMarket";
 
-admin.initializeApp();
+initializeApp();
 
 // CSFloat API key, stored in Google Secret Manager (set once via
 // `firebase functions:secrets:set CSFLOAT_API_KEY`). Steam Market needs
@@ -67,9 +69,9 @@ export const beginSteamLogin = onCall(
     const login = newSteamLogin(
       `https://us-central1-${project}.cloudfunctions.net/steamLoginReturn`,
     );
-    await admin.firestore().collection("steamLoginSessions").doc(sessionKey(login.sessionId)).set({
+    await getFirestore().collection("steamLoginSessions").doc(sessionKey(login.sessionId)).set({
       returnTo: login.returnTo,
-      expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + LOGIN_TTL_MS),
+      expiresAt: Timestamp.fromMillis(Date.now() + LOGIN_TTL_MS),
     });
     return login;
   },
@@ -86,7 +88,7 @@ export const createCustomToken = onCall(
     } catch {
       throw new HttpsError("invalid-argument", "Start a new Steam login");
     }
-    const db = admin.firestore();
+    const db = getFirestore();
     const sessionRef = db.collection("steamLoginSessions").doc(key);
     const session = (await sessionRef.get()).data();
     if (!session || session.expiresAt.toMillis() <= Date.now()) {
@@ -99,7 +101,7 @@ export const createCustomToken = onCall(
       // Never log assertions, session secrets, cookies or Firebase tokens.
       throw new HttpsError("unauthenticated", "Steam login could not be verified. Please try again.");
     }
-    const token = await admin.auth().createCustomToken(steamId, {steamVerified: true});
+    const token = await getAuth().createCustomToken(steamId, {steamVerified: true});
     await db.runTransaction(async (transaction) => {
       const current = (await transaction.get(sessionRef)).data();
       if (!current || current.expiresAt.toMillis() <= Date.now()) {
@@ -141,7 +143,7 @@ export const updatePriceChanges = onSchedule(
     secrets: [csfloatApiKey],
   },
   async () => {
-    const db = admin.firestore();
+    const db = getFirestore();
     const snapshot = await db.collection("prices").get();
 
     if (snapshot.empty) {
@@ -206,7 +208,6 @@ export const updatePriceChanges = onSchedule(
         continue;
       }
 
-      const {FieldValue} = admin.firestore;
       const update: Record<string, unknown> = {
         lastUpdated: FieldValue.serverTimestamp(),
         priceChangeComputedAt: FieldValue.serverTimestamp(),
@@ -251,7 +252,7 @@ export const updatePriceChanges = onSchedule(
 
     // Stamp the run so the app can show a real "prices updated at" time.
     await metaRef.set({
-      lastRun: admin.firestore.FieldValue.serverTimestamp(),
+      lastRun: FieldValue.serverTimestamp(),
       updated,
       steamOk,
       csfloatOk,

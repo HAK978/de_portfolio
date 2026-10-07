@@ -8,7 +8,7 @@
 const {test, beforeEach, afterEach} = require('node:test');
 const assert = require('node:assert/strict');
 const {createHash} = require('node:crypto');
-const admin = require('firebase-admin');
+const {getFirestore, Timestamp} = require('firebase-admin/firestore');
 const {beginSteamLogin, createCustomToken} = require('../../lib/index');
 const {STEAM_ENDPOINT} = require('../../lib/steamAuth');
 
@@ -51,7 +51,7 @@ function assertionFor(login, overrides = {}) {
   };
 }
 
-const sessionDoc = (sessionId) => admin.firestore().collection('steamLoginSessions')
+const sessionDoc = (sessionId) => getFirestore().collection('steamLoginSessions')
   .doc(createHash('sha256').update(sessionId).digest('hex'));
 
 function decodeJwt(token) {
@@ -93,7 +93,7 @@ test('only a hash of the session ID is stored server-side', async () => {
 
 test('an expired session is refused before Steam is contacted', async () => {
   const login = await beginSteamLogin.run({});
-  await sessionDoc(login.sessionId).update({expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() - 1000)});
+  await sessionDoc(login.sessionId).update({expiresAt: Timestamp.fromMillis(Date.now() - 1000)});
   await rejectsWith(
     createCustomToken.run({data: {sessionId: login.sessionId, assertion: assertionFor(login)}}),
     'unauthenticated');
