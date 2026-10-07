@@ -5,6 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../models/steam_login_session.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/sign_in_errors.dart';
 
 /// Returned only after Steam verification and Firebase sign-in both succeed.
 class SteamLoginResult {
@@ -77,10 +78,10 @@ class _SteamLoginScreenState extends ConsumerState<SteamLoginScreen> {
         ));
       setState(() => _controller = controller);
       await controller.loadRequest(session.loginUrl);
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Could not start Steam sign-in. Check your connection and try again.';
+          _error = signInStartErrorMessage(e);
           _loading = false;
         });
       }
