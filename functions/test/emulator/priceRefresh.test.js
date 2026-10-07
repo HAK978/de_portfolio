@@ -7,7 +7,7 @@ const {test, before, after} = require('node:test');
 const assert = require('node:assert/strict');
 
 process.env.CSFLOAT_API_KEY = 'test-key'; // read by defineSecret at run time
-const admin = require('firebase-admin');
+const {getFirestore} = require('firebase-admin/firestore');
 const {updatePriceChanges} = require('../../lib/index');
 
 const HOUR = 60 * 60 * 1000;
@@ -36,7 +36,7 @@ after(() => {
 });
 
 test('refresh writes prices and changes to prices/, samples to priceHistory/', async () => {
-  const db = admin.firestore();
+  const db = getFirestore();
   const now = Date.now();
   await db.doc('prices/ak').set({
     marketHashName: 'AK-47 | Redline (Field-Tested)',
