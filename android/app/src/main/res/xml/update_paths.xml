@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The only folder the update installer may read: cache/updates, where the
+     app saves a downloaded APK after verifying its SHA-256. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

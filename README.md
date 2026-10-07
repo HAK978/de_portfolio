@@ -28,6 +28,9 @@ for each part.
   Game Coordinator by the storage service.
 - **Search** across the full CS2 item catalog with rarity, collection and
   wear filters, plus side-by-side price comparison.
+- **In-app updates**: Settings → Check for updates downloads the newest
+  release from GitHub, verifies its SHA-256, and opens Android's
+  installer.
 
 ## Architecture
 
@@ -108,6 +111,9 @@ samples instead of the phone's patchy history.
   per-user data, owner-only shared writes, server-only collections.
 - Deploys verify the VM's SSH host key, and third-party GitHub Actions
   that see secrets are pinned to commit SHAs.
+- The in-app updater only downloads this repo's release assets, and only
+  installs an APK whose checksum matches. Android refuses any update not
+  signed with the release key.
 
 ## Testing
 

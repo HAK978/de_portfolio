@@ -9,6 +9,7 @@ import '../../providers/price_history_provider.dart';
 import '../../providers/price_provider.dart';
 import '../../providers/storage_provider.dart';
 import '../auth/steam_login_screen.dart';
+import '../../widgets/update_card.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -410,14 +411,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           const SizedBox(height: 12),
 
-          // App info
-          const Card(
-            child: ListTile(
-              leading: Icon(Icons.info_outline),
-              title: Text('About'),
-              subtitle: Text('CS2 Portfolio Manager v1.1.0'),
-            ),
-          ),
+          // Installed version + in-app updates from GitHub Releases
+          const UpdateCard(),
         ],
       ),
     );

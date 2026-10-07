@@ -59,8 +59,15 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: flutter build apk --release
 
+      # The in-app updater only installs an APK that matches this checksum.
+      - name: Checksum APK
+        working-directory: build/app/outputs/flutter-apk
+        run: sha256sum app-release.apk > app-release.apk.sha256
+
       - name: Publish APK to GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-release.apk.sha256
           generate_release_notes: true
