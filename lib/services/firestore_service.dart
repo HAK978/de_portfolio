@@ -152,128 +152,18 @@ class FirestoreService {
   }
 
   // ── Prices (shared collection) ────────────────────────────
-
-  /// Saves price data for an item. Prices are shared across all users
-  /// since they're the same for everyone.
-  Future<void> savePrice({
-    required String marketHashName,
-    required double currentPrice,
-    double? csfloatPrice,
-  }) async {
-    if (_quotaExhausted || !isAuthenticated) return;
-    await _db.collection('prices').doc(_sanitizeDocId(marketHashName)).set({
-      'marketHashName': marketHashName,
-      'currentPrice': currentPrice,
-      'csfloatPrice': csfloatPrice,
-      'lastUpdated': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
-  /// Batch-saves prices for multiple items.
-  Future<void> savePrices(Map<String, double> prices) async {
-    debugPrint('savePrices: called with ${prices.length} prices, auth=$isAuthenticated, quota=$_quotaExhausted');
-    if (!isAuthenticated) {
-      debugPrint('savePrices: skipping — not authenticated');
-      return;
-    }
-    if (_quotaExhausted) return;
-
-    const batchSize = 50;
-    final entries = prices.entries.toList();
-
-    for (int i = 0; i < entries.length; i += batchSize) {
-      final batch = _db.batch();
-      final end = (i + batchSize).clamp(0, entries.length);
-      final chunk = entries.sublist(i, end);
-
-      for (final entry in chunk) {
-        final docRef = _db.collection('prices').doc(_sanitizeDocId(entry.key));
-        batch.set(docRef, {
-          'marketHashName': entry.key,
-          'currentPrice': entry.value,
-          'lastUpdated': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
-
-      try {
-        await batch.commit().timeout(const Duration(seconds: 20));
-      } catch (e) {
-        if (e.toString().contains('RESOURCE_EXHAUSTED')) {
-          _quotaExhausted = true;
-          return;
-        }
-        debugPrint('savePrices: batch failed — $e');
-      }
-    }
-
-    debugPrint('savePrices: saved ${prices.length} prices');
-  }
-
-  /// Batch-saves CSFloat prices — only updates the csfloatPrice field.
-  Future<void> saveCsfloatPrices(Map<String, double> prices) async {
-    if (!isAuthenticated) {
-      debugPrint('saveCsfloatPrices: skipping — not authenticated');
-      return;
-    }
-    if (_quotaExhausted) return;
-
-    const batchSize = 50;
-    final entries = prices.entries.toList();
-
-    for (int i = 0; i < entries.length; i += batchSize) {
-      final batch = _db.batch();
-      final end = (i + batchSize).clamp(0, entries.length);
-      final chunk = entries.sublist(i, end);
-
-      for (final entry in chunk) {
-        final docRef = _db.collection('prices').doc(_sanitizeDocId(entry.key));
-        batch.set(docRef, {
-          'marketHashName': entry.key,
-          'csfloatPrice': entry.value,
-          'lastUpdated': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
-
-      try {
-        await batch.commit().timeout(const Duration(seconds: 20));
-      } catch (e) {
-        if (e.toString().contains('RESOURCE_EXHAUSTED')) {
-          _quotaExhausted = true;
-          return;
-        }
-        debugPrint('saveCsfloatPrices: batch failed — $e');
-      }
-    }
-
-    debugPrint('saveCsfloatPrices: saved ${prices.length} prices');
-  }
-
-  /// Loads all cached prices from Firestore.
-  Future<Map<String, double>> loadPrices() async {
-    final snapshot = await _db.collection('prices').get();
-    final prices = <String, double>{};
-
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-      final name = data['marketHashName'] as String?;
-      final price = (data['currentPrice'] as num?)?.toDouble();
-      if (name != null && price != null) {
-        prices[name] = price;
-      }
-    }
-
-    debugPrint('Loaded ${prices.length} prices from Firestore');
-    return prices;
-  }
+  //
+  // Written only by the scheduled `updatePriceChanges` Cloud Function; the
+  // security rules reject client writes.
 
   /// Loads server-maintained price data (currentPrice, csfloatPrice,
   /// priceChange24h) from the shared prices collection, keyed by
   /// marketHashName.
   ///
-  /// These fields are refreshed daily by the `updatePriceChanges`
-  /// scheduled Cloud Function — the app reads them on open so prices
-  /// stay current without depending on a manual fetch. Reads the whole
-  /// collection in one query.
+  /// These fields are refreshed every 4 hours by the `updatePriceChanges`
+  /// scheduled Cloud Function from bulk price files. The app reads them on
+  /// open so prices stay current without depending on a manual fetch.
+  /// Reads the whole collection in one query.
   Future<Map<String, ServerPriceData>> loadServerPrices() async {
     final snapshot = await _db.collection('prices').get();
     final result = <String, ServerPriceData>{};
@@ -308,13 +198,6 @@ class FirestoreService {
       debugPrint('loadPriceRefreshTime failed: $e');
       return null;
     }
-  }
-
-  // ── Retry Logic ─────────────────────────────────────────
-
-  /// Firestore doc IDs can't contain forward slashes.
-  String _sanitizeDocId(String name) {
-    return name.replaceAll('/', '_');
   }
 
 }

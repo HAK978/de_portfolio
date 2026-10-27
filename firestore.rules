@@ -37,13 +37,12 @@ service cloud.firestore {
       }
     }
 
-    // Prices — shared collection, any authenticated user can read.
-    // Client writes allowed only from the app owner's account.
-    // Cloud Functions use Admin SDK which bypasses rules entirely.
+    // Prices — shared collection every user reads. Only the scheduled
+    // Cloud Function writes it (the Admin SDK bypasses rules), so no client
+    // can plant a fake price that other users would see.
     match /prices/{priceId} {
       allow read: if verifiedUser();
-      allow write: if verifiedUser()
-        && request.auth.uid == '76561198369694237';
+      allow write: if false;
     }
 
     // Server metadata (e.g. priceRefresh.lastRun) — any authenticated

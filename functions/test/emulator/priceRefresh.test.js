@@ -1,33 +1,50 @@
 // Runs the scheduled price refresh against the Firestore emulator, with
-// Steam Market and CSFloat faked at the fetch layer.
+// CS2 Trader's bulk price files faked at the fetch layer.
 //
 // Run with `npm run test:emulator`.
 
 const {test, before, after} = require('node:test');
 const assert = require('node:assert/strict');
 
-process.env.CSFLOAT_API_KEY = 'test-key'; // read by defineSecret at run time
 const {getFirestore} = require('firebase-admin/firestore');
 const {updatePriceChanges} = require('../../lib/index');
+const {MIN_BULK_ITEMS} = require('../../lib/bulkPrices');
 
 const HOUR = 60 * 60 * 1000;
 const realFetch = globalThis.fetch;
 
+const REDLINE = 'AK-47 | Redline (Field-Tested)';
+const HOWL = 'M4A4 | Howl (Field-Tested)'; // only in a user's inventory, never priced before
+const RARE = 'Souvenir AWP | Dragon Lore (Factory New)'; // no recent Steam sales
+const GRAFFITI = 'Sealed Graffiti | GGWP (Wire Blue)'; // not listed on CSFloat
+const MEDAL = '5 Year Veteran Coin'; // not on any market
+
+function bulkFile(extra) {
+  const items = {...extra};
+  for (let i = 0; Object.keys(items).length < MIN_BULK_ITEMS; i++) items[`filler ${i}`] = {};
+  return items;
+}
+
+const steamFile = bulkFile({
+  [REDLINE]: {last_24h: 1100, last_7d: 1050, last_30d: 1000, last_90d: 990},
+  [HOWL]: {last_24h: 4000, last_7d: 3900, last_30d: null, last_90d: null},
+  [RARE]: {last_24h: null, last_7d: null, last_30d: 250000, last_90d: 240000},
+  [GRAFFITI]: {last_24h: 0.05, last_7d: 0.05, last_30d: 0.05, last_90d: 0.05},
+});
+const csfloatFile = bulkFile({
+  [REDLINE]: {price: 1080, starting_at: {price: 1080}, highest_order: {price: 1000}},
+  [HOWL]: {price: 3800},
+});
+
+const requested = [];
 before(() => {
   globalThis.fetch = async (url, init) => {
     const u = new URL(String(url));
-    const name = u.searchParams.get('market_hash_name');
-    if (u.hostname === 'steamcommunity.com') {
-      // Steam answers 429 to Node's default User-Agent, so the job must identify itself.
-      assert.ok(init.headers['User-Agent'].startsWith('CS2PortfolioManager/'), 'Steam request must identify the app');
-      if (name === 'Unlisted Item') return Response.json({success: false});
-      return Response.json({success: true, lowest_price: '$1,100.00'});
-    }
-    if (u.hostname === 'csfloat.com') {
-      assert.equal(init.headers.Authorization, 'test-key');
-      return Response.json(name === 'Unlisted Item' ? [] : [{price: 110000}]);
-    }
-    return realFetch(url, init);
+    if (u.hostname !== 'prices.csgotrader.app') return realFetch(url, init);
+    requested.push(u.pathname);
+    assert.ok(init.headers['User-Agent'].startsWith('CS2PortfolioManager/'), 'requests must identify the app');
+    const body = u.pathname.endsWith('/steam.json') ? steamFile : csfloatFile;
+    return Response.json(body, {headers: {'last-modified': 'Tue, 27 Oct 2026 01:25:15 GMT'}});
   };
 });
 
@@ -35,48 +52,68 @@ after(() => {
   globalThis.fetch = realFetch;
 });
 
-test('refresh writes prices and changes to prices/, samples to priceHistory/', async () => {
+test('prices every watched and inventory item from two bulk downloads', async () => {
   const db = getFirestore();
   const now = Date.now();
-  await db.doc('prices/ak').set({
-    marketHashName: 'AK-47 | Redline (Field-Tested)',
-    currentPrice: 1000,
-    previousPrice24h: 900, // leftover from the old baseline scheme
-    baselineTakenAt: now - 30 * HOUR,
+
+  // Already-priced item with history from the bulk source: changes are computed.
+  await db.doc(`prices/${REDLINE}`).set({marketHashName: REDLINE, currentPrice: 1000});
+  await db.doc(`priceHistory/${REDLINE}`).set({
+    source: 'csgotrader-steam',
+    samples: [{at: now - 24 * HOUR - HOUR, price: 1000}],
   });
-  await db.doc('priceHistory/ak').set({samples: [{at: now - 24 * HOUR - HOUR, price: 1000}]});
-  await db.doc('prices/unlisted').set({marketHashName: 'Unlisted Item', currentPrice: 5});
-  await db.doc('prices/broken').set({currentPrice: 1}); // no marketHashName
+  // Already-priced item whose history came from the old per-item scraper:
+  // those samples measured a different price, so they're discarded.
+  await db.doc(`prices/${GRAFFITI}`).set({marketHashName: GRAFFITI, currentPrice: 0.03});
+  await db.doc(`priceHistory/${GRAFFITI}`).set({samples: [{at: now - 24 * HOUR - HOUR, price: 0.03}]});
+  // Items that exist only in a user's synced inventory.
+  await db.doc('inventories/76561198000000002').set({itemCount: 3});
+  await db.doc('inventories/76561198000000002/items/a').set({marketHashName: HOWL});
+  await db.doc('inventories/76561198000000002/items/b').set({marketHashName: RARE});
+  await db.doc('inventories/76561198000000002/items/c').set({marketHashName: MEDAL});
 
   await updatePriceChanges.run({});
 
-  const price = (await db.doc('prices/ak').get()).data();
-  assert.equal(price.currentPrice, 1100);
-  assert.equal(price.csfloatPrice, 1100);
-  assert.equal(price.priceChange24h, 10);
-  assert.equal(price.priceChange7d, null);
-  assert.equal(price.priceHistoryVersion, 2);
-  // The document the app downloads stays small: no samples, no old baseline fields.
-  assert.equal(price.samples, undefined);
-  assert.equal(price.priceHistory, undefined);
-  assert.equal(price.previousPrice24h, undefined);
-  assert.equal(price.baselineTakenAt, undefined);
+  assert.deepEqual(requested.sort(), ['/latest/csfloat.json', '/latest/steam.json']);
 
-  const history = (await db.doc('priceHistory/ak').get()).data();
-  assert.equal(history.samples.length, 2);
-  assert.equal(history.samples.at(-1).price, 1100);
+  const redline = (await db.doc(`prices/${REDLINE}`).get()).data();
+  assert.equal(redline.currentPrice, 1100);
+  assert.equal(redline.steamPriceWindow, 'last_24h');
+  assert.equal(redline.csfloatPrice, 1080);
+  assert.equal(redline.priceChange24h, 10);
+  assert.equal(redline.priceHistoryVersion, 2);
 
-  // Items with no listing on either market are left alone.
-  assert.equal((await db.doc('prices/unlisted').get()).data().currentPrice, 5);
-  assert.equal((await db.doc('priceHistory/unlisted').get()).exists, false);
+  // A friend's item gets priced without the app writing anything.
+  const howl = (await db.doc(`prices/${HOWL}`).get()).data();
+  assert.equal(howl.marketHashName, HOWL);
+  assert.equal(howl.currentPrice, 4000);
+  assert.equal(howl.csfloatPrice, 3800);
+  assert.equal(howl.priceChange24h, null); // no history yet, so "unknown", not 0%
+
+  const rare = (await db.doc(`prices/${RARE}`).get()).data();
+  assert.equal(rare.currentPrice, 250000);
+  assert.equal(rare.steamPriceWindow, 'last_30d');
+  assert.equal(rare.csfloatPrice, undefined);
+
+  const graffiti = (await db.doc(`prices/${GRAFFITI}`).get()).data();
+  assert.equal(graffiti.currentPrice, 0.05);
+  assert.equal(graffiti.priceChange24h, null); // old-source history wasn't compared
+  const graffitiHistory = (await db.doc(`priceHistory/${GRAFFITI}`).get()).data();
+  assert.equal(graffitiHistory.source, 'csgotrader-steam');
+  assert.deepEqual(graffitiHistory.samples.map((s) => s.price), [0.05]);
+
+  // Not on any market: no document is created for it.
+  assert.equal((await db.doc(`prices/${MEDAL}`).get()).exists, false);
+
+  // The document the app downloads never carries the history samples.
+  assert.equal(redline.samples, undefined);
 
   const meta = (await db.doc('meta/priceRefresh').get()).data();
   assert.deepEqual(
-    {
-      updated: meta.updated, skipped: meta.skipped, total: meta.total, unreached: meta.unreached,
-      steamBlocked: meta.steamBlocked, steamSkipped: meta.steamSkipped,
-    },
-    {updated: 1, skipped: 2, total: 3, unreached: 0, steamBlocked: 0, steamSkipped: 0},
+    {source: meta.source, items: meta.items, steamPriced: meta.steamPriced,
+      csfloatPriced: meta.csfloatPriced, missing: meta.missing},
+    {source: 'csgotrader', items: 5, steamPriced: 4, csfloatPriced: 2, missing: 1},
   );
-  assert.equal(typeof meta.cursor, 'string');
+  assert.equal(meta.steamUpdatedAt, 'Tue, 27 Oct 2026 01:25:15 GMT');
+  assert.equal(meta.cursor, undefined); // stats from the old per-item job are gone
 });

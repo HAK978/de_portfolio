@@ -13,7 +13,7 @@ const {
 } = require('@firebase/rules-unit-testing');
 const {doc, getDoc, getDocs, collection, setDoc, updateDoc, deleteDoc} = require('firebase/firestore');
 
-const OWNER = '76561198369694237'; // the only account allowed to write shared prices
+const OWNER = '76561198369694237'; // owns the seeded inventory and profile
 const OTHER = '76561198000000002';
 
 let env;
@@ -91,10 +91,12 @@ describe('prices (shared)', () => {
     await assertSucceeds(getDocs(collection(asUser(OTHER), 'prices')));
   });
 
-  test('only the app owner can write them', async () => {
-    await assertSucceeds(setDoc(priceDoc(asUser(OWNER)), {currentPrice: 13}));
+  test('no client can write them, not even the app owner (only the server does)', async () => {
+    await assertFails(setDoc(priceDoc(asUser(OWNER)), {currentPrice: 13}));
+    await assertFails(updateDoc(priceDoc(asUser(OWNER)), {currentPrice: 13}));
     await assertFails(setDoc(priceDoc(asUser(OTHER)), {currentPrice: 9999}));
-    await assertFails(updateDoc(priceDoc(asUser(OWNER, {verified: false})), {currentPrice: 9999}));
+    await assertFails(setDoc(doc(asUser(OTHER), 'prices/New Item'), {marketHashName: 'New Item'}));
+    await assertFails(deleteDoc(priceDoc(asUser(OWNER))));
   });
 
   test('signed-out clients cannot read them', async () => {

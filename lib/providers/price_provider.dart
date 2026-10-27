@@ -9,7 +9,6 @@ import '../models/cs2_item.dart';
 import '../services/csfloat_service.dart';
 import '../services/price_service.dart';
 import '../services/secure_setting.dart';
-import 'auth_provider.dart';
 import 'inventory_provider.dart';
 import 'storage_provider.dart';
 
@@ -138,7 +137,6 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
     ref.read(storageProvider.notifier).seedSteamBatchTotal(storageTotal);
 
     final service = ref.read(priceServiceProvider);
-    Map<String, double> lastPrices = {};
 
     _subscription = service.fetchPrices(uniqueNames).listen(
       (progress) {
@@ -147,7 +145,6 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
           total: progress.total,
           currentItem: progress.currentItem,
         );
-        lastPrices = progress.prices;
 
         // Merge prices into inventory on each update so the UI
         // updates progressively — persist:false skips disk/cloud writes
@@ -156,7 +153,6 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
       onDone: () {
         debugPrint('Price fetch complete: ${state.fetched}/${state.total}');
         ref.read(inventoryProvider.notifier).persistCurrentState();
-        _syncPricesToFirestore(lastPrices);
         saveLastPriceFetchTimestamp();
         state = state.copyWith(isFetching: false);
         _subscription = null;
@@ -172,18 +168,6 @@ class PriceFetchNotifier extends Notifier<PriceFetchState> {
         _subscription = null;
       },
     );
-  }
-
-  /// Syncs fetched prices to the shared Firestore prices collection.
-  Future<void> _syncPricesToFirestore(Map<String, double> prices) async {
-    debugPrint('_syncPricesToFirestore: ${prices.length} prices to sync');
-    if (prices.isEmpty) return;
-    try {
-      final firestore = ref.read(firestoreServiceProvider);
-      await firestore.savePrices(prices);
-    } catch (e) {
-      debugPrint('Price sync to Firestore failed: $e');
-    }
   }
 
   /// Stops an in-progress price fetch.
@@ -325,8 +309,6 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
     // Re-read service now that key is guaranteed loaded
     final service = ref.read(csfloatServiceProvider);
 
-    Map<String, double> lastPrices = {};
-
     _subscription = service.fetchPrices(uniqueNames).listen(
       (progress) {
         state = state.copyWith(
@@ -334,13 +316,11 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
           total: progress.total,
           currentItem: progress.currentItem,
         );
-        lastPrices = progress.prices;
         ref.read(inventoryProvider.notifier).updateCsfloatPrices(progress.prices, persist: false);
       },
       onDone: () {
         debugPrint('CSFloat fetch complete: ${state.fetched}/${state.total}');
         ref.read(inventoryProvider.notifier).persistCurrentState();
-        _syncCsfloatPricesToFirestore(lastPrices);
         state = state.copyWith(isFetching: false);
         _subscription = null;
         // Also refresh CSFloat prices for all loaded storage units
@@ -355,17 +335,6 @@ class CsfloatFetchNotifier extends Notifier<PriceFetchState> {
         _subscription = null;
       },
     );
-  }
-
-  /// Syncs CSFloat prices to Firestore shared prices collection.
-  void _syncCsfloatPricesToFirestore(Map<String, double> prices) async {
-    if (prices.isEmpty) return;
-    try {
-      final firestore = ref.read(firestoreServiceProvider);
-      await firestore.saveCsfloatPrices(prices);
-    } catch (e) {
-      debugPrint('CSFloat price sync to Firestore failed: $e');
-    }
   }
 
   void cancel() {

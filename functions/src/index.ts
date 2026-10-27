@@ -1,57 +1,13 @@
 import {initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
-import {FieldValue, Timestamp, getFirestore} from "firebase-admin/firestore";
+import {FieldValue, Firestore, Timestamp, getFirestore} from "firebase-admin/firestore";
 import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
-import {defineSecret} from "firebase-functions/params";
 import {LOGIN_TTL_MS, newSteamLogin, sessionKey, verifySteamAssertion} from "./steamAuth";
 import {updatePriceHistory} from "./priceHistory";
-import {orderAfterCursor} from "./cursor";
-import {BlockBreaker, fetchSteamPrice} from "./steamMarket";
+import {fetchBulkFile, pickCsfloatPrice, pickSteamPrice, priceDocId} from "./bulkPrices";
 
 initializeApp();
-
-// CSFloat API key, stored in Google Secret Manager (set once via
-// `firebase functions:secrets:set CSFLOAT_API_KEY`). Steam Market needs
-// no key; CSFloat requires this in the Authorization header.
-const csfloatApiKey = defineSecret("CSFLOAT_API_KEY");
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Fetches the lowest CSFloat listing price (cents -> dollars). Honors
- * the x-ratelimit-reset header on a 429 with a single bounded retry.
- */
-async function fetchCsfloatPrice(
-  marketHashName: string,
-  apiKey: string,
-): Promise<number | null> {
-  const url = "https://csfloat.com/api/v1/listings" +
-    `?market_hash_name=${encodeURIComponent(marketHashName)}` +
-    "&sort_by=lowest_price&type=buy_now&limit=1";
-  const headers = {Authorization: apiKey};
-  try {
-    let res = await fetch(url, {headers, signal: AbortSignal.timeout(15_000)});
-    if (res.status === 429) {
-      const reset = parseInt(res.headers.get("x-ratelimit-reset") ?? "0", 10);
-      const waitMs = reset > 0 ?
-        Math.min(Math.max(reset * 1000 - Date.now(), 2000), 10_000) : 5000;
-      await sleep(waitMs);
-      res = await fetch(url, {headers, signal: AbortSignal.timeout(15_000)});
-    }
-    if (!res.ok) return null;
-    const data = await res.json() as
-      {price?: number}[] | {data?: {price?: number}[]};
-    const listings = Array.isArray(data) ? data : (data.data ?? []);
-    if (listings.length === 0) return null;
-    const cents = listings[0]?.price;
-    return typeof cents === "number" && cents > 0 ? cents / 100 : null;
-  } catch (e) {
-    console.warn(`CSFloat price fetch failed for "${marketHashName}":`, e);
-    return null;
-  }
-}
 
 // The WebView intercepts this URL before loading it. A fallback page contains
 // no assertion data or tokens and is safe if opened outside the app.
@@ -113,162 +69,139 @@ export const createCustomToken = onCall(
   },
 );
 
+/** History samples made from a different source are discarded, not mixed in. */
+const HISTORY_SOURCE = "csgotrader-steam";
+
 /**
  * Server-side price refresh, every 4 hours.
  *
- * `prices/{id}` is the watch list (every item the app has priced) and
- * the small document the app downloads: current Steam + CSFloat prices
- * and the 24h / 7d / 30d changes. For each document this:
- *   1. Fetches Steam Market and CSFloat prices concurrently.
- *   2. Appends the Steam price to `priceHistory/{id}`, a server-only
- *      document of hourly samples (31 days max), and derives the changes
- *      from it (see priceHistory.ts). History lives in its own collection
- *      so the app's full read of `prices` stays small.
- *   3. Stamps `meta/priceRefresh` with the run time, counts and a cursor.
- *
- * Items are processed serially with a ~2s gap to respect Steam Market's
- * rate limit. A wall-clock budget stops the run before the timeout, and
- * the next run resumes after the last attempted item (see cursor.ts).
- *
- * Requires the Blaze plan (Cloud Scheduler) and the CSFLOAT_API_KEY secret.
+ * Prices come from CS2 Trader's bulk files (see bulkPrices.ts): two
+ * downloads cover every CS2 item. The watch list is every item already in
+ * `prices` plus everything in users' synced inventories, so a new user's
+ * items get priced on the next run without the app writing anything.
+ * For each item this:
+ *   1. Picks the Steam price (most recent average available) and the lowest
+ *      CSFloat listing.
+ *   2. Appends the Steam price to `priceHistory/{id}` (server-only, hourly
+ *      samples, 31 days) and derives the 24h / 7d / 30d changes from it.
+ *   3. Writes prices and changes to `prices/{id}`, which the app reads.
+ * Finally it stamps `meta/priceRefresh` with the run time and counts.
  */
 export const updatePriceChanges = onSchedule(
   {
     schedule: "every 4 hours",
     timeZone: "Etc/UTC",
-    // ~200 items at ~2.9s each is ~575s; 900s leaves headroom so the
-    // whole watch list usually refreshes in one run.
-    timeoutSeconds: 900,
-    memory: "256MiB",
-    secrets: [csfloatApiKey],
+    timeoutSeconds: 300,
+    // The two files parse to a few tens of MB of objects.
+    memory: "512MiB",
   },
   async () => {
     const db = getFirestore();
-    const snapshot = await db.collection("prices").get();
 
-    if (snapshot.empty) {
-      console.log("updatePriceChanges: no price docs to process");
-      return;
-    }
+    // Steam prices drive the history and changes, so a failed Steam download
+    // aborts the run; a failed CSFloat download only skips CSFloat prices.
+    const steam = await fetchBulkFile("steam");
+    const csfloat = await fetchBulkFile("csfloat").catch((e) => {
+      console.warn("updatePriceChanges: CSFloat file unavailable:", e);
+      return null;
+    });
 
-    const apiKey = csfloatApiKey.value();
-    const startMs = Date.now();
-    // Safety net under the 900s timeout so in-flight writes finish.
-    const TIME_BUDGET_MS = 800_000;
+    const watchList = await loadWatchList(db);
+    const ids = [...watchList.keys()];
+    const now = Date.now();
+    let steamPriced = 0;
+    let csfloatPriced = 0;
+    let missing = 0;
 
-    let updated = 0;
-    let steamOk = 0;
-    let csfloatOk = 0;
-    let skipped = 0;
-    let unreached = 0;
-    // What Steam did this run, so a block shows up in the stats instead of
-    // silently producing no prices.
-    let steamBlocked = 0;
-    let steamSkipped = 0;
-    const steamBreaker = new BlockBreaker();
-
-    const metaRef = db.collection("meta").doc("priceRefresh");
-    const cursor = (await metaRef.get()).data()?.cursor;
-    const docsById = new Map(snapshot.docs.map((doc) => [doc.id, doc]));
-    const ordered = orderAfterCursor([...docsById.keys()], cursor);
-    let lastAttempted: string | null = typeof cursor === "string" ? cursor : null;
-
-    for (const id of ordered) {
-      if (Date.now() - startMs > TIME_BUDGET_MS) {
-        unreached = snapshot.size - (updated + skipped);
-        console.log(`updatePriceChanges: time budget hit, ${unreached} unreached`);
-        break;
-      }
-
-      lastAttempted = id;
-      const doc = docsById.get(id)!;
-      const data = doc.data();
-      const name = typeof data.marketHashName === "string" ?
-        data.marketHashName : null;
-      if (!name) {
-        skipped++;
-        continue;
-      }
-
-      const attemptSteam = steamBreaker.shouldAttempt();
-      if (!attemptSteam) steamSkipped++;
-      const [steam, csfloatPrice] = await Promise.all([
-        attemptSteam ? fetchSteamPrice(name) : Promise.resolve(null),
-        fetchCsfloatPrice(name, apiKey),
-      ]);
-      if (steam) {
-        steamBreaker.record(steam.outcome);
-        if (steam.outcome === "blocked") steamBlocked++;
-      }
-      const steamPrice = steam?.price ?? null;
-
-      if (steamPrice === null && csfloatPrice === null) {
-        skipped++;
-        await sleep(2000);
-        continue;
-      }
-
-      const update: Record<string, unknown> = {
-        lastUpdated: FieldValue.serverTimestamp(),
-        priceChangeComputedAt: FieldValue.serverTimestamp(),
-      };
+    // Two writes per item; stay well under Firestore's 500-write batch limit.
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200);
+      const histories = await db.getAll(
+        ...chunk.map((id) => db.collection("priceHistory").doc(id)));
       const batch = db.batch();
 
-      if (steamPrice !== null) {
-        const historyRef = db.collection("priceHistory").doc(id);
-        const history = (await historyRef.get()).data();
-        const result = updatePriceHistory(history?.samples, steamPrice, Date.now());
-
-        update.currentPrice = steamPrice;
-        update.priceChange24h = result.priceChange24h;
-        update.priceChange7d = result.priceChange7d;
-        update.priceChange30d = result.priceChange30d;
-        update.priceHistoryVersion = 2;
-        // Fields from the old rolling-baseline scheme, no longer used.
-        for (const field of ["previousPrice24h", "baselineTakenAt",
-          "previousPrice7d", "baseline7dTakenAt",
-          "previousPrice30d", "baseline30dTakenAt"]) {
-          update[field] = FieldValue.delete();
+      chunk.forEach((id, index) => {
+        const name = watchList.get(id)!;
+        const steamPrice = pickSteamPrice(steam.items[name]);
+        const csfloatPrice = csfloat ? pickCsfloatPrice(csfloat.items[name]) : null;
+        if (!steamPrice && csfloatPrice === null) {
+          missing++;
+          return;
         }
-        batch.set(historyRef, {
+
+        const update: Record<string, unknown> = {
           marketHashName: name,
-          samples: result.priceHistory,
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-        steamOk++;
-      }
-      if (csfloatPrice !== null) {
-        update.csfloatPrice = csfloatPrice;
-        csfloatOk++;
-      }
+          lastUpdated: FieldValue.serverTimestamp(),
+        };
+        if (steamPrice) {
+          const history = histories[index].data();
+          const samples = history?.source === HISTORY_SOURCE ? history.samples : [];
+          const result = updatePriceHistory(samples, steamPrice.price, now);
+          Object.assign(update, {
+            currentPrice: steamPrice.price,
+            steamPriceWindow: steamPrice.window,
+            priceChange24h: result.priceChange24h,
+            priceChange7d: result.priceChange7d,
+            priceChange30d: result.priceChange30d,
+            priceHistoryVersion: 2,
+            priceChangeComputedAt: FieldValue.serverTimestamp(),
+          });
+          batch.set(histories[index].ref, {
+            marketHashName: name,
+            source: HISTORY_SOURCE,
+            samples: result.priceHistory,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          steamPriced++;
+        }
+        if (csfloatPrice !== null) {
+          update.csfloatPrice = csfloatPrice;
+          csfloatPriced++;
+        }
+        batch.set(db.collection("prices").doc(id), update, {merge: true});
+      });
 
-      batch.set(doc.ref, update, {merge: true});
       await batch.commit();
-      updated++;
-
-      // Pace to respect Steam Market's rate limit.
-      await sleep(2000);
     }
 
-    // Stamp the run so the app can show a real "prices updated at" time.
-    await metaRef.set({
+    // Overwrite (not merge) so stats from the old per-item job disappear.
+    await db.collection("meta").doc("priceRefresh").set({
       lastRun: FieldValue.serverTimestamp(),
-      updated,
-      steamOk,
-      csfloatOk,
-      skipped,
-      unreached,
-      steamBlocked,
-      steamSkipped,
-      total: snapshot.size,
-      cursor: lastAttempted,
-    }, {merge: true});
+      source: "csgotrader",
+      items: ids.length,
+      steamPriced,
+      csfloatPriced,
+      missing,
+      steamUpdatedAt: steam.updatedAt,
+      csfloatUpdatedAt: csfloat?.updatedAt ?? null,
+    });
 
     console.log(
-      `updatePriceChanges: ${updated} updated ` +
-      `(steam ${steamOk}, csfloat ${csfloatOk}), ` +
-      `steam refused ${steamBlocked}, steam skipped ${steamSkipped}, ` +
-      `${skipped} skipped, ${unreached} unreached of ${snapshot.size}`
+      `updatePriceChanges: ${ids.length} items, steam ${steamPriced}, ` +
+      `csfloat ${csfloatPriced}, ${missing} missing ` +
+      `(source updated ${steam.updatedAt})`
     );
   }
 );
+
+/**
+ * Item names to price, keyed by price document ID: every existing price
+ * document plus every item in any user's synced inventory.
+ */
+async function loadWatchList(
+  db: Firestore,
+): Promise<Map<string, string>> {
+  const watchList = new Map<string, string>();
+  const add = (name: unknown) => {
+    if (typeof name === "string" && name.length > 0) watchList.set(priceDocId(name), name);
+  };
+
+  const prices = await db.collection("prices").select("marketHashName").get();
+  prices.docs.forEach((doc) => add(doc.get("marketHashName")));
+
+  for (const user of await db.collection("inventories").listDocuments()) {
+    const items = await user.collection("items").select("marketHashName").get();
+    items.docs.forEach((doc) => add(doc.get("marketHashName")));
+  }
+  return watchList;
+}
