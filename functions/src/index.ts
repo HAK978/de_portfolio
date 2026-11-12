@@ -77,8 +77,8 @@ const HISTORY_SOURCE = "csgotrader-steam";
  *
  * Prices come from CS2 Trader's bulk files (see bulkPrices.ts): two
  * downloads cover every CS2 item. The watch list is every item already in
- * `prices` plus everything in users' synced inventories, so a new user's
- * items get priced on the next run without the app writing anything.
+ * `prices` plus everything in users' synced inventories and storage units
+ * (see loadWatchList), so a new user's items get priced on the next run.
  * For each item this:
  *   1. Picks the Steam price (most recent average available) and the lowest
  *      CSFloat listing.
@@ -184,9 +184,13 @@ export const updatePriceChanges = onSchedule(
   }
 );
 
+/** Same cap as firestore.rules, enforced again in case a document predates it. */
+const MAX_STORAGE_NAMES_PER_USER = 5000;
+
 /**
  * Item names to price, keyed by price document ID: every existing price
- * document plus every item in any user's synced inventory.
+ * document, every item in any user's synced inventory, and the item names
+ * in each user's storage units (`users/{steamId}.storageItemNames`).
  */
 async function loadWatchList(
   db: Firestore,
@@ -202,6 +206,12 @@ async function loadWatchList(
   for (const user of await db.collection("inventories").listDocuments()) {
     const items = await user.collection("items").select("marketHashName").get();
     items.docs.forEach((doc) => add(doc.get("marketHashName")));
+  }
+
+  const users = await db.collection("users").select("storageItemNames").get();
+  for (const user of users.docs) {
+    const names = user.get("storageItemNames");
+    if (Array.isArray(names)) names.slice(0, MAX_STORAGE_NAMES_PER_USER).forEach(add);
   }
   return watchList;
 }

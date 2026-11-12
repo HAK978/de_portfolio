@@ -18,6 +18,7 @@ const HOWL = 'M4A4 | Howl (Field-Tested)'; // only in a user's inventory, never 
 const RARE = 'Souvenir AWP | Dragon Lore (Factory New)'; // no recent Steam sales
 const GRAFFITI = 'Sealed Graffiti | GGWP (Wire Blue)'; // not listed on CSFloat
 const MEDAL = '5 Year Veteran Coin'; // not on any market
+const CAPSULE = 'Paris 2023 Legends Sticker Capsule'; // only inside a storage unit
 
 function bulkFile(extra) {
   const items = {...extra};
@@ -30,6 +31,7 @@ const steamFile = bulkFile({
   [HOWL]: {last_24h: 4000, last_7d: 3900, last_30d: null, last_90d: null},
   [RARE]: {last_24h: null, last_7d: null, last_30d: 250000, last_90d: 240000},
   [GRAFFITI]: {last_24h: 0.05, last_7d: 0.05, last_30d: 0.05, last_90d: 0.05},
+  [CAPSULE]: {last_24h: 0.4, last_7d: 0.38, last_30d: 0.35, last_90d: 0.3},
 });
 const csfloatFile = bulkFile({
   [REDLINE]: {price: 1080, starting_at: {price: 1080}, highest_order: {price: 1000}},
@@ -71,6 +73,8 @@ test('prices every watched and inventory item from two bulk downloads', async ()
   await db.doc('inventories/76561198000000002/items/a').set({marketHashName: HOWL});
   await db.doc('inventories/76561198000000002/items/b').set({marketHashName: RARE});
   await db.doc('inventories/76561198000000002/items/c').set({marketHashName: MEDAL});
+  // Item names from a user's storage units (written by the app).
+  await db.doc('users/76561198000000002').set({displayName: 'Friend', storageItemNames: [CAPSULE, REDLINE]});
 
   await updatePriceChanges.run({});
 
@@ -102,6 +106,10 @@ test('prices every watched and inventory item from two bulk downloads', async ()
   assert.equal(graffitiHistory.source, 'csgotrader-steam');
   assert.deepEqual(graffitiHistory.samples.map((s) => s.price), [0.05]);
 
+  // Storage-only items get priced too.
+  const capsule = (await db.doc(`prices/${CAPSULE}`).get()).data();
+  assert.equal(capsule.currentPrice, 0.4);
+
   // Not on any market: no document is created for it.
   assert.equal((await db.doc(`prices/${MEDAL}`).get()).exists, false);
 
@@ -112,7 +120,7 @@ test('prices every watched and inventory item from two bulk downloads', async ()
   assert.deepEqual(
     {source: meta.source, items: meta.items, steamPriced: meta.steamPriced,
       csfloatPriced: meta.csfloatPriced, missing: meta.missing},
-    {source: 'csgotrader', items: 5, steamPriced: 4, csfloatPriced: 2, missing: 1},
+    {source: 'csgotrader', items: 6, steamPriced: 5, csfloatPriced: 2, missing: 1},
   );
   assert.equal(meta.steamUpdatedAt, 'Tue, 27 Oct 2026 01:25:15 GMT');
   assert.equal(meta.cursor, undefined); // stats from the old per-item job are gone

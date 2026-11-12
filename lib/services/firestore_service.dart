@@ -94,6 +94,20 @@ class FirestoreService {
     }, SetOptions(merge: true));
   }
 
+  /// Saves the distinct item names in the signed-in user's storage units so
+  /// the scheduled price job prices them too (it otherwise only sees synced
+  /// inventories). Names only, never contents or quantities. Returns false
+  /// if nobody is signed in yet, so the caller can retry later.
+  Future<bool> saveStorageItemNames(List<String> names) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || _quotaExhausted) return false;
+    await _db.collection('users').doc(uid).set({
+      'storageItemNames': names,
+      'storageItemsUpdatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    return true;
+  }
+
   /// Gets user profile data.
   Future<Map<String, dynamic>?> getUserProfile(String steamId) async {
     final doc = await _db.collection('users').doc(steamId).get();

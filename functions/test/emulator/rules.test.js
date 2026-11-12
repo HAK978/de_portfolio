@@ -81,6 +81,16 @@ describe('users', () => {
     await assertFails(getDoc(doc(asUser(OTHER), `users/${OWNER}`)));
     await assertFails(getDoc(doc(asUser(OWNER, {verified: false}), `users/${OWNER}`)));
   });
+
+  test('owners can list their storage item names for pricing, up to a cap', async () => {
+    const names = (n) => Array.from({length: n}, (_, i) => `Item ${i}`);
+    const profile = doc(asUser(OWNER), `users/${OWNER}`);
+    await assertSucceeds(setDoc(profile, {storageItemNames: names(5000)}, {merge: true}));
+    await assertFails(setDoc(profile, {storageItemNames: names(5001)}, {merge: true}));
+    await assertFails(setDoc(profile, {storageItemNames: 'not a list'}, {merge: true}));
+    // Nobody can add names to someone else's list.
+    await assertFails(setDoc(doc(asUser(OTHER), `users/${OWNER}`), {storageItemNames: ['Fake']}, {merge: true}));
+  });
 });
 
 describe('prices (shared)', () => {

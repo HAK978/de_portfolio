@@ -8,9 +8,11 @@ import 'package:path_provider/path_provider.dart';
 import '../models/cs2_item.dart';
 import '../models/storage_unit.dart';
 import '../services/csfloat_service.dart';
+import '../services/firestore_service.dart' show ServerPriceData;
 import '../services/price_service.dart';
 import '../services/secure_setting.dart';
 import '../services/storage_service.dart';
+import 'auth_provider.dart';
 import 'price_provider.dart';
 
 /// The base URL for the storage service.
@@ -154,6 +156,69 @@ final storageProvider = NotifierProvider<StorageNotifier, StorageState>(
   StorageNotifier.new,
 );
 
+/// Most distinct storage item names a user can list for server pricing
+/// (the same cap is enforced in firestore.rules).
+const maxStorageItemNamesForPricing = 5000;
+
+/// The distinct item names across all loaded storage units, sorted, for the
+/// server's price watch list.
+List<String> storageItemNamesForPricing(List<StorageUnit> units) {
+  final names = <String>{
+    for (final unit in units)
+      for (final item in unit.items)
+        if (item.marketHashName.isNotEmpty) item.marketHashName,
+  }.toList()
+    ..sort();
+  return names.length > maxStorageItemNamesForPricing
+      ? names.sublist(0, maxStorageItemNamesForPricing)
+      : names;
+}
+
+/// Applies server-refreshed prices and 24h/7d/30d changes to storage items,
+/// recomputing each changed unit's totals. Unchanged units are returned as
+/// the same objects. Returns null if nothing changed.
+List<StorageUnit>? applyServerPricesToUnits(
+  List<StorageUnit> units,
+  Map<String, ServerPriceData> prices,
+) {
+  var anyChanged = false;
+  final updated = units.map((unit) {
+    var unitChanged = false;
+    final items = unit.items.map((item) {
+      final sp = prices[item.marketHashName];
+      if (sp == null) return item;
+      final newCurrent = sp.currentPrice ?? item.currentPrice;
+      final newCsfloat = sp.csfloatPrice ?? item.csfloatPrice;
+      if (newCurrent == item.currentPrice &&
+          newCsfloat == item.csfloatPrice &&
+          sp.priceChange24h == item.priceChange24h &&
+          sp.priceChange7d == item.priceChange7d &&
+          sp.priceChange30d == item.priceChange30d) {
+        return item;
+      }
+      unitChanged = true;
+      return item.copyWith(
+        currentPrice: newCurrent,
+        csfloatPrice: newCsfloat,
+        priceChange24h: sp.priceChange24h,
+        priceChange7d: sp.priceChange7d,
+        priceChange30d: sp.priceChange30d,
+      );
+    }).toList();
+    if (!unitChanged) return unit;
+    anyChanged = true;
+    return StorageUnit(
+      id: unit.id,
+      name: unit.name,
+      itemCount: unit.itemCount,
+      totalValue: items.fold(0.0, (sum, i) => sum + (i.currentPrice * i.quantity)),
+      totalCsfloatValue: items.fold(0.0, (sum, i) => sum + ((i.csfloatPrice ?? 0) * i.quantity)),
+      items: items,
+    );
+  }).toList();
+  return anyChanged ? updated : null;
+}
+
 class StorageNotifier extends Notifier<StorageState> {
   static const _cachePrefix = 'storage_cache_';
   static const _unitsIndexFile = 'storage_units_index.json';
@@ -165,11 +230,56 @@ class StorageNotifier extends Notifier<StorageState> {
   bool _steamCanceled = false;
   bool _csfloatCanceled = false;
 
+  // The item-name list last shared with the server (see
+  // syncItemNamesForPricing), so unchanged lists aren't rewritten.
+  String? _syncedNames;
+
   @override
   StorageState build() {
+    // Sign-in is restored asynchronously on startup, so the name sync may
+    // have been skipped; retry it once the user is signed in.
+    ref.listen(authProvider.select((s) => s.isLoggedIn), (_, loggedIn) {
+      if (loggedIn) {
+        syncItemNamesForPricing();
+      } else {
+        _syncedNames = null;
+      }
+    });
     // Fire off async cache load — state starts empty, updates when cache loads
     _loadCachedUnits();
     return const StorageState();
+  }
+
+  /// Shares the distinct item names in the loaded storage units with the
+  /// server, so its scheduled price job covers them too. Skips the write
+  /// when the list hasn't changed since the last successful sync.
+  Future<void> syncItemNamesForPricing() async {
+    final names = storageItemNamesForPricing(state.units);
+    if (names.isEmpty) return;
+    final signature = names.join('\n');
+    if (signature == _syncedNames) return;
+    try {
+      if (await ref.read(firestoreServiceProvider).saveStorageItemNames(names)) {
+        _syncedNames = signature;
+      }
+    } catch (e) {
+      debugPrint('Storage item name sync failed: $e');
+    }
+  }
+
+  /// Applies server-refreshed prices (loaded once on app open by
+  /// InventoryNotifier.applyServerPrices) to storage items, and saves the
+  /// caches of the units that changed.
+  Future<void> applyServerPrices(Map<String, ServerPriceData> prices) async {
+    final before = state.units;
+    final updated = applyServerPricesToUnits(before, prices);
+    if (updated == null) return;
+    state = state.copyWith(units: updated);
+    for (var i = 0; i < updated.length; i++) {
+      if (i >= before.length || !identical(updated[i], before[i])) {
+        await _saveCache(updated[i].id, updated[i].items);
+      }
+    }
   }
 
   /// Stop any in-flight Steam Market or CSFloat price fetches across
@@ -237,6 +347,7 @@ class StorageNotifier extends Notifier<StorageState> {
 
       if (units.isNotEmpty) {
         state = state.copyWith(units: units);
+        syncItemNamesForPricing();
       }
     } catch (e) {
       debugPrint('Failed to load cached storage units: $e');
@@ -339,6 +450,7 @@ class StorageNotifier extends Notifier<StorageState> {
 
       // Save to cache so collection data persists across restarts
       await _saveCache(casketId, withCached);
+      syncItemNamesForPricing();
 
       // Auto-refresh prices if cache is older than 24 hours
       if (await _isCacheStale(casketId)) {

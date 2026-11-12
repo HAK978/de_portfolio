@@ -24,7 +24,13 @@ service cloud.firestore {
 
     // User profiles — users can only read/write their own
     match /users/{steamId} {
-      allow read, write: if verifiedUser() && request.auth.uid == steamId;
+      allow read, delete: if verifiedUser() && request.auth.uid == steamId;
+      // storageItemNames feeds the server's price watch list, so its size is
+      // capped (pricing costs grow with it).
+      allow create, update: if verifiedUser() && request.auth.uid == steamId
+        && (!('storageItemNames' in request.resource.data)
+            || (request.resource.data.storageItemNames is list
+                && request.resource.data.storageItemNames.size() <= 5000));
     }
 
     // Inventories — users can only access their own inventory

@@ -287,30 +287,30 @@ class InventoryNotifier extends AsyncNotifier<List<CS2Item>> {
   /// requiring a manual fetch. The manual fetch flow still works and
   /// overrides these afterward.
   ///
-  /// Fire-and-forget: called on app open. No-ops if the inventory isn't
-  /// loaded yet or the user isn't authenticated. Only non-null server
-  /// values overwrite existing ones.
+  /// Fire-and-forget: called on app open. No-ops if the user isn't
+  /// authenticated. Only non-null server values overwrite existing ones.
+  /// The same download also prices storage-unit items, which the server
+  /// job covers via their synced names.
   Future<void> applyServerPrices() async {
-    final items = state.when(
-      data: (items) => items,
-      loading: () => null,
-      error: (_, _) => null,
-    );
-    if (items == null || items.isEmpty) return;
-
-    final firestore = ref.read(firestoreServiceProvider);
-    if (!firestore.isAuthenticated) return;
+    // Nothing loaded means nothing to price. This also keeps Firebase out of
+    // the picture when it isn't configured (tests, offline mode).
+    final hasInventory = state.asData?.value.isNotEmpty ?? false;
+    if (!hasInventory && ref.read(storageProvider).units.isEmpty) return;
 
     final requestedSteamId = ref.read(steamIdProvider);
     try {
+      final firestore = ref.read(firestoreServiceProvider);
+      if (!firestore.isAuthenticated) return;
       final serverPrices = await firestore.loadServerPrices();
-      if (serverPrices.isEmpty) return;
+      if (serverPrices.isEmpty || !ref.mounted) return;
+
+      ref.read(storageProvider.notifier).applyServerPrices(serverPrices);
 
       // Merge into the current state after the await, preserving newer floats
       // and quantities. Ignore responses for an account that has changed.
-      if (!ref.mounted || ref.read(steamIdProvider) != requestedSteamId) return;
+      if (ref.read(steamIdProvider) != requestedSteamId) return;
       final currentItems = state.asData?.value;
-      if (currentItems == null) return;
+      if (currentItems == null || currentItems.isEmpty) return;
       var anyApplied = false;
       final updatedItems = currentItems.map((item) {
         final sp = serverPrices[item.marketHashName];
